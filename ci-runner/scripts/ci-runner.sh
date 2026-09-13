@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci-runner.sh — deterministic local CI for open PRs across configured GitHub owners.
+# ci-runner.sh — deterministic local CI for open PRs in the target repos.
 #
 # For each open, non-draft PR whose head SHA has no local-ci commit status yet:
 #   clone shallow -> checkout pull/N/head -> run the repo's own GitHub workflows
@@ -11,15 +11,11 @@
 # ledger — no local state files. A `pending` status alone (crashed run) does
 # not count as ran. See README.md for event-driven and all-local alternatives.
 #
-# Env: OWNERS, DAYS (repo activity window, default 30), STATUS_CONTEXT, KEEP_WORK.
+# Env: REPOS / OWNERS (default: the current repo, see resolve_repos), DAYS (repo
+# activity window when expanding OWNERS, default 30), ONLY (substring filter on
+# repo slug), STATUS_CONTEXT, KEEP_WORK.
 set -uo pipefail
 
-# OWNERS: space-separated GitHub users/orgs to scan. Defaults to the
-# authenticated `gh` user plus every org that account belongs to.
-if [[ -z "${OWNERS:-}" ]]; then
-  OWNERS=$( { gh api user --jq .login; gh api user/orgs --paginate --jq '.[].login'; } 2>/dev/null | tr '\n' ' ')
-fi
-OWNERS=($OWNERS)
 DAYS="${DAYS:-30}"
 STATUS_CONTEXT="${STATUS_CONTEXT:-local-ci}"
 MARKER="<!-- generic-coding-agents:ci-runner -->"
@@ -38,6 +34,35 @@ else
 fi
 
 log() { printf '[ci-runner] %s\n' "$*" >&2; }
+
+# Target repos, one "owner/repo" per line. Precedence:
+#   REPOS   space-separated owner/repo slugs (used as given)
+#   OWNERS  space-separated GitHub users/orgs, expanded to repos pushed within $DAYS
+#   else    the repo of the current working directory (its `origin` remote)
+# Nothing is ever enumerated from the user's GitHub account. If the current
+# repo cannot be determined, exit 2 with a message — the agent should ask the
+# user which repo(s) to target and re-run with REPOS or OWNERS set.
+resolve_repos() {
+  if [[ -n "${REPOS:-}" ]]; then
+    printf '%s\n' $REPOS
+  elif [[ -n "${OWNERS:-}" ]]; then
+    for owner in $OWNERS; do
+      gh repo list "$owner" --limit 300 --json nameWithOwner,pushedAt \
+        --jq ".[] | select(.pushedAt >= \"$CUTOFF\") | .nameWithOwner" || true
+    done
+  else
+    local url slug
+    url=$(git remote get-url origin 2>/dev/null) || url=""
+    # git@host:owner/repo.git | https://host/owner/repo(.git) | ssh://git@host/owner/repo
+    slug=$(sed -E 's#^(git@|ssh://[^@/]+@|https?://)[^/:]+[:/]##; s#/$##; s#\.git$##' <<<"$url")
+    if [[ -z "$url" || ! "$slug" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+      echo "ERROR: could not determine the target repo from 'git remote get-url origin' in $PWD (got: '${url:-nothing}')." >&2
+      echo "       Ask the user which repo(s) to target, then re-run with REPOS='owner/repo ...' or OWNERS='org user ...'." >&2
+      exit 2
+    fi
+    echo "$slug"
+  fi
+}
 
 # Bootstrap a venv with PyYAML for the workflow interpreter (one-time).
 ensure_python() {
@@ -200,17 +225,15 @@ $(tail -c 6000 "$logf" | tail -n 80 | LC_ALL=C sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]
 
 # --- sweep --------------------------------------------------------------------
 
-for owner in "${OWNERS[@]}"; do
-  repos=$(gh repo list "$owner" --limit 300 --json nameWithOwner,pushedAt \
-            --jq ".[] | select(.pushedAt >= \"$CUTOFF\") | .nameWithOwner") || continue
-  for repo in $repos; do
-    if [[ -n "${ONLY:-}" && "$repo" != *"$ONLY"* ]]; then continue; fi
-    while IFS=$'\t' read -r n sha; do
-      [[ -z "${n:-}" ]] && continue
-      run_pr "$repo" "$n" "$sha"
-    done < <(gh pr list -R "$repo" --state open --json number,isDraft,headRefOid \
-               --jq '.[] | select(.isDraft | not) | [.number, .headRefOid] | @tsv' 2>/dev/null)
-  done
+repos=$(resolve_repos) || exit $?
+
+for repo in $repos; do
+  if [[ -n "${ONLY:-}" && "$repo" != *"$ONLY"* ]]; then continue; fi
+  while IFS=$'\t' read -r n sha; do
+    [[ -z "${n:-}" ]] && continue
+    run_pr "$repo" "$n" "$sha"
+  done < <(gh pr list -R "$repo" --state open --json number,isDraft,headRefOid \
+             --jq '.[] | select(.isDraft | not) | [.number, .headRefOid] | @tsv' 2>/dev/null)
 done
 
 echo

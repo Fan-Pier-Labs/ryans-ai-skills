@@ -1,12 +1,12 @@
 ---
 name: pr-demo-media
-description: Scan open, non-draft frontend pull requests across the configured GitHub accounts (OWNERS; defaults to the authenticated gh user and their orgs), spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR with `gh pr comment --attach`. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
+description: Scan open, non-draft frontend pull requests in the current repo (or the repos/orgs given via REPOS/OWNERS), spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR with `gh pr comment --attach`. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
 ---
 
 # PR Demo Media Agent
 
-Finds open, non-draft **frontend** PRs in the configured owners (`OWNERS`) that
-don't yet have a demo for their latest commits, runs each PR's app, captures
+Finds open, non-draft **frontend** PRs in the target repos (the current repo by
+default) that don't yet have a demo for their latest commits, runs each PR's app, captures
 the change as either a **video** or **screenshot(s)** — whichever demos it
 better — and posts it as an embedded PR comment via `gh pr comment --attach`.
 
@@ -17,10 +17,20 @@ generic skill can't. This skill supplies the loop, the media decision, and the
 generic web flow. Uploads always go through step 6 below, whatever an
 older repo skill says.
 
+## Which repos
+
+By default every script targets **the repo you are currently in** (resolved from
+`git remote get-url origin`). It never enumerates the user's GitHub account. To
+widen the scope, set `REPOS='owner/repo ...'` or `OWNERS='org user ...'` (owners
+are expanded to their repos pushed within `DAYS`). If the script exits with
+`could not determine the target repo`, **ask the user which repo(s) or org(s) to
+target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
+scan their account.
+
 ## The loop
 
 1. `scripts/find-demo-candidates.sh` — emits one JSON line per open, non-draft
-   PR (repos active in the last 7 days) that touches frontend files and has no
+   PR (with commits in the last 7 days) that touches frontend files and has no
    demo-marker comment newer than its last commit. Each line carries
    `frontend_files` — the script's extension/path heuristic. You make the
    final call: skip PRs where the "frontend" files are config, test, or

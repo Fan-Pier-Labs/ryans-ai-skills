@@ -1,9 +1,8 @@
 # generic-coding-agents
 
 Six Claude Code skills. Four are standalone coding agents operating on
-whichever GitHub users/orgs you point them at (`OWNERS`; defaults to the authenticated `gh`
-user plus their orgs); two review cloud infrastructure (cost, and
-reliability/security/fitness). All PR/repo discovery is done
+the repo you are currently in (or the repos/orgs you name via `REPOS`/`OWNERS`); two review
+cloud infrastructure (cost, and reliability/security/fitness). All PR/repo discovery is done
 by deterministic bash scripts (`scripts/` in each skill); the model does the
 judgment work on top.
 
@@ -34,9 +33,12 @@ done
   twice for the same head SHA.
 - **Read-only discovery**: the `find-*-candidates.sh` scripts never write
   anything to GitHub — safe to run any time.
-- **Env tuning**: `OWNERS`, `DAYS`, `MARKER` on every script. `OWNERS` is a
-  space-separated list of GitHub users/orgs; unset, it resolves to the authenticated
-  `gh` user plus every org that account belongs to.
+- **Target repos**: by default the repo of the current working directory, from
+  `git remote get-url origin`. `REPOS='owner/repo ...'` names repos explicitly;
+  `OWNERS='org user ...'` expands users/orgs to their repos pushed within `DAYS`.
+  The scripts never enumerate the user's GitHub account; if the current repo can't
+  be resolved they exit 2 and the agent asks the user what to target.
+- **Env tuning**: `REPOS`, `OWNERS`, `DAYS`, `MARKER` on every script.
 - Write surfaces: auto-reviewer and pr-demo-media post comments only;
   ci-runner posts statuses + one upserted comment; dependency-updater pushes
   branches and opens PRs. Nothing merges, force-pushes, or deletes.

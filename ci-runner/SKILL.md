@@ -1,6 +1,6 @@
 ---
 name: ci-runner
-description: Run CI locally for every open pull request across the configured GitHub accounts (OWNERS; defaults to the authenticated gh user and their orgs) — a stand-in for GitHub Actions while the account is out of CI credits. Executes each repo's own .github/workflows YAML on this machine via a workflow interpreter, and posts the result back as a commit status (plus a log comment on failure). Use whenever the user asks to run CI on PRs, "check if my PRs pass", start the CI agent, run tests across open PRs, or mentions GitHub Actions being out of credits/minutes.
+description: Run CI locally for every open pull request in the current repo (or the repos/orgs given via REPOS/OWNERS) — a stand-in for GitHub Actions while the account is out of CI credits. Executes each repo's own .github/workflows YAML on this machine via a workflow interpreter, and posts the result back as a commit status (plus a log comment on failure). Use whenever the user asks to run CI on PRs, "check if my PRs pass", start the CI agent, run tests across open PRs, or mentions GitHub Actions being out of credits/minutes.
 ---
 
 # CI Runner Agent
@@ -10,7 +10,7 @@ local machine instead. It is **entirely deterministic** —
 one script does everything, and once started it needs no model judgment:
 
 ```bash
-scripts/ci-runner.sh          # one full sweep over both owners
+scripts/ci-runner.sh          # one full sweep over the target repos (default: the current repo)
 ```
 
 What one sweep does, per open non-draft PR whose head SHA has no `local-ci`
@@ -38,6 +38,19 @@ commit status yet:
 machine can run sweeps and interrupted runs (stuck at `pending`) self-heal.
 New commits on a PR make it eligible again automatically.
 
+## Which repos
+
+By default every script targets **the repo you are currently in** (resolved from
+`git remote get-url origin`). It never enumerates the user's GitHub account. To
+widen the scope, set `REPOS='owner/repo ...'` or `OWNERS='org user ...'` (owners
+are expanded to their repos pushed within `DAYS`). If the script exits with
+`could not determine the target repo`, **ask the user which repo(s) or org(s) to
+target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
+scan their account.
+
+The cron form below runs outside any checkout, so give it `REPOS` or `OWNERS`
+explicitly.
+
 ## Running it as an agent
 
 The script is single-sweep by design; looping is the harness's job. When asked
@@ -45,7 +58,7 @@ to "start the CI runner", run it on an interval — `/loop 10m` in Claude Code,
 or plain cron:
 
 ```bash
-*/10 * * * * /path/to/generic-coding-agents/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
+*/10 * * * * REPOS='owner/repo' /path/to/generic-coding-agents/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
 ```
 
 For push-driven runs instead of polling (`gh webhook forward`, Events-API
@@ -71,7 +84,8 @@ result, duration) to the user. Zero-work sweeps are normal.
 
 ## Tuning
 
-Env vars: `OWNERS` (space-separated users/orgs; default: the authenticated `gh` user plus their orgs), `DAYS` (repo-activity
-window, default 30), `STATUS_CONTEXT` (default `local-ci`), `KEEP_WORK=1` to
+Env vars: `REPOS` (space-separated `owner/repo`), `OWNERS` (space-separated
+users/orgs; neither set → the current repo), `DAYS` (repo-activity window when
+expanding `OWNERS`, default 30), `ONLY` (substring filter on the repo slug), `STATUS_CONTEXT` (default `local-ci`), `KEEP_WORK=1` to
 keep work directories for debugging. Secrets a workflow needs (e.g.
 `SOME_API_TEST_CREDS`) can be exported in the sweep's environment.
