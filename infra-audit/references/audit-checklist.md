@@ -1,4 +1,4 @@
-# Audit checklist — the twelve questions, how to answer each, and what "good" looks like
+# Audit checklist — the thirteen questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -12,7 +12,7 @@ and guesses (label these).
 Contents: Q0 Append-only CloudTrail · Q1 Scaling roadblocks · Q2 DB backups · Q3 Self-hosted DB
 · Q4 Right infra for the use case · Q5 Split-brain hosting · Q6 Too many tools · Q7 2FA
 everywhere · Q8 RDS rotating password · Q9 Crash resilience · Q10 Observability · Q11
-Hosting-provider tier · S. Security hygiene found on the way
+Hosting-provider tier · Q12 Containerized · S. Security hygiene found on the way
 
 ---
 
@@ -201,11 +201,47 @@ recommending against them. Detect from DNS and IP ownership (`whois` on the app'
 repo's deploy targets, and the billing list. Recommend: move the critical path, keep the batch
 work where it is if it is already cheap and isolated.
 
+## Q12. Is the code containerized? (recommended: yes)
+
+"Containerized" means: there is a `Dockerfile` (or equivalent build) in the repo, CI builds an
+image from it, and **that image is what runs in production**. A Dockerfile used only for local
+dev while prod is `git pull && pm2 restart` on a long-lived box does not count.
+
+Why it matters: the container is the unit that makes every other good answer cheap. Q9 (crash
+resilience) is a one-line ECS/Fargate service once there is an image; Q1 (scaling) becomes
+"run more of them"; the never-rebooted-box problem (§S) disappears because the OS is rebuilt on
+every deploy; the runtime version is pinned in the image instead of drifting on the host; a
+new engineer can run prod locally on day one; and moving between providers (Q5/Q6/Q11) is a
+config change rather than a migration. Un-containerized apps accumulate "works on this box"
+state — a global `npm install -g` from 2023, a hand-edited nginx config, an env var set in
+someone's `.bashrc` — that nobody can reproduce.
+
+Detect, in this order:
+
+- **Repo**: `Dockerfile` / `Containerfile`, `docker-compose*.yml`, `.dockerignore`; a CI
+  workflow that runs `docker build` / `docker push` (ECR, GHCR, Docker Hub) or a PaaS config
+  that points at a Dockerfile (`render.yaml` `env: docker`, `fly.toml`, `app.yaml`).
+  Buildpack-based PaaS deploys (Heroku/Railway/Render "native" runtimes, Vercel) produce an
+  image without a Dockerfile — that counts as **Yes**, note "buildpack-built".
+- **AWS inventory**: `ecs_services` (task definitions with images), App Runner, Lambda
+  container images (`PackageType=Image`), ECR repositories with recent pushes. Bare EC2 with an
+  IAM profile and no ECS/ASG is the usual **No**.
+- **On the box** (SSH `containers` section): `docker ps` shows the app running as a container
+  → Yes-on-a-VM (Partial if there is no `--restart` policy and no orchestrator — see Q9). `pm2`,
+  `systemd` units pointing at a checkout in `/var/www` or `/home/ubuntu/app`, or a Bitnami stack
+  → **No**.
+
+Answer **Partial** when only part of the system is containerized (API in Fargate, workers as a
+cron on a box) and say which part. Recommend the smallest path: write the Dockerfile from the
+existing start command, build it in CI, run it on the same EC2 with `--restart unless-stopped`
+as step one, then move to Fargate/App Runner/a PaaS as the Q9 fix. Do not recommend Kubernetes
+to a startup with one service.
+
 ---
 
 ## S. Security hygiene you will find on the way (report under "Security findings")
 
-Not one of the twelve questions, but the inventory and sweep surface them and a reader will
+Not one of the thirteen questions, but the inventory and sweep surface them and a reader will
 expect them. Severity in brackets.
 
 - **[Critical] Secrets in cleartext on a public host** — SSH `secrets-on-disk` (names, files,

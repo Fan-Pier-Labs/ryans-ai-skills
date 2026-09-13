@@ -145,7 +145,9 @@ if ok(vols):
 amis = L("ec2_public_amis")
 if ok(amis) and amis: md += [f"**{len(amis)} PUBLIC AMIs owned by this account:** " + ", ".join(a['Id'] for a in amis), ""]
 asg = L("autoscaling_groups"); ecs = L("ecs_services"); lam = L("lambda_functions"); eb = L("eb_environments"); ar = L("apprunner_services"); ls = L("lightsail_instances")
-md += ["## Compute platforms in use (checklist Q4/Q5/Q9)", ""]
+md += ["## Compute platforms in use (checklist Q4/Q5/Q9/Q12)", ""]
+ecr = L("ecr_repositories")
+md.append(f"- ECR repositories: {len(ecr) if ok(ecr) else 'n/a'}" + (" — " + ", ".join(r['Name'] for r in ecr[:8]) if ok(ecr) and ecr else " (no images built for AWS — containerized deploys, if any, live elsewhere)"))
 md.append(f"- Auto Scaling groups: {len(asg) if ok(asg) else 'n/a'}")
 if ok(ecs):
     md.append(f"- ECS services: {len([e for e in ecs if e.get('service')])}")
@@ -155,7 +157,7 @@ if ok(ecs):
             md.append(f"  - `{e['service']}` on {e['launchType']}: desired={e['desired']} running={e['running']} circuit-breaker={(e.get('deploymentCircuitBreaker') or {}).get('enable')} container-healthcheck={any(k['healthCheck'] for k in c)} secrets={sum(k['secrets'] for k in c)} plain-env={sum(k['plainEnv'] for k in c)} logs={[k['logDriver'] for k in c]}")
 if ok(lam):
     old = [f for f in lam if any(x in (f.get("Runtime") or "") for x in ("nodejs14", "nodejs16", "nodejs18", "python3.7", "python3.8", "python3.9", "ruby2", "go1.x", "dotnet6"))]
-    md.append(f"- Lambda functions: {len(lam)}; **{len(old)} on deprecated/EOL runtimes**: " + ", ".join(f['Name'] + ' (' + f['Runtime'] + ')' for f in old[:8]))
+    md.append(f"- Lambda functions: {len(lam)} ({sum(1 for f in lam if f.get('Package') == 'Image')} container-image); **{len(old)} on deprecated/EOL runtimes**: " + ", ".join(f['Name'] + ' (' + str(f['Runtime']) + ')' for f in old[:8]))
 if ok(eb) and eb: md.append(f"- Elastic Beanstalk environments: {len(eb)} — " + ", ".join(f"{e['Name']} ({e['Health']})" for e in eb))
 if ok(ar) and ar.get("ServiceSummaryList"): md.append(f"- App Runner services: {len(ar['ServiceSummaryList'])}")
 if ok(ls) and ls: md.append(f"- Lightsail instances: {len(ls)} — " + ", ".join(f"{i['Name']} ({i['Blueprint']}, {i['State']})" for i in ls))
