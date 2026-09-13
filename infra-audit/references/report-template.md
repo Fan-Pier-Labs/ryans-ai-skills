@@ -1,6 +1,6 @@
 # Audit report template
 
-Use this shape. Every one of the twelve questions gets a row in the scorecard and a section,
+Use this shape. Every one of the thirteen questions gets a row in the scorecard and a section,
 even when the answer is "Yes, verified" in one line — a reader checking the audit against the
 checklist should never wonder whether a question was skipped. Lead with the worst thing. Keep
 the prose for someone who knows the domain but didn't watch you work: what it is, why it
@@ -42,6 +42,7 @@ trail, and good observability." End with what fixing the top three costs in time
 | 9 | Crash/OOM resilient | | High | <bare EC2 + pm2, no startup hook> |
 | 10 | Observability set up | | Medium | |
 | 11 | Mainstream provider for critical pieces | | Medium | |
+| 12 | Code is containerized | | Medium | <Dockerfile + ECR image in ECS task def / pm2 on a checkout> |
 
 **Security findings on the way:** <n> Critical, <n> High, <n> Medium — see the section below.
 
@@ -94,6 +95,10 @@ section is longer than the others when the answer is Yes.>
 | Product analytics | | |
 
 ## Q11. Hosting-provider tier — <Answer>
+
+## Q12. Containerized — <Answer>
+
+<What builds the image, where it is pushed, what runs it in prod. Partial: which parts are not.>
 
 ---
 

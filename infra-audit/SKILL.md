@@ -1,12 +1,12 @@
 ---
 name: infra-audit
-description: Audit a startup's infrastructure for reliability, security, and fitness — answer twelve concrete questions (append-only CloudTrail, what breaks first at scale, DB backups, self-hosted DB, right infra for the use case, split hosting, too many providers, 2FA everywhere, RDS password rotation, crash/OOM resilience, observability, mainstream vs budget hosting) using read-only AWS inventory plus an SSH look inside every running EC2 box, and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to audit, review, assess, harden, or sanity-check their infrastructure, cloud setup, AWS account, or deployment; asks "is our setup dumb", "are we ready to scale", "what would a CTO/investor/SOC 2 auditor flag", "do we have backups", "is our database safe"; mentions due diligence, security posture, CloudTrail, MFA/2FA on AWS, or is about to add a database, a second hosting provider, or a self-hosted service — even if they don't say "audit". For pure cost reduction, use infra-cost-review instead.
+description: Audit a startup's infrastructure for reliability, security, and fitness — answer thirteen concrete questions (append-only CloudTrail, what breaks first at scale, DB backups, self-hosted DB, right infra for the use case, split hosting, too many providers, 2FA everywhere, RDS password rotation, crash/OOM resilience, observability, mainstream vs budget hosting, containerized code) using read-only AWS inventory plus an SSH look inside every running EC2 box, and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to audit, review, assess, harden, or sanity-check their infrastructure, cloud setup, AWS account, or deployment; asks "is our setup dumb", "are we ready to scale", "what would a CTO/investor/SOC 2 auditor flag", "do we have backups", "is our database safe"; mentions due diligence, security posture, CloudTrail, MFA/2FA on AWS, or is about to add a database, a second hosting provider, or a self-hosted service — even if they don't say "audit". For pure cost reduction, use infra-cost-review instead.
 ---
 
 # Infra Audit
 
 The question is not "what does this cost" (that is `infra-cost-review`). It is: **would a
-careful senior engineer let this company run on this?** Twelve concrete questions, each with
+careful senior engineer let this company run on this?** Thirteen concrete questions, each with
 a recommended answer, plus the security hygiene you find on the way. The report is a scorecard
 with evidence a founder can hand to an investor or a new engineering lead.
 
@@ -24,6 +24,7 @@ with evidence a founder can hand to an investor or a new engineering lead.
 | 9 | App server resilient to crashes/OOMs? (Fargate: yes; bare EC2: no) | Yes |
 | 10 | Analytics and observability (e.g. Datadog)? | Yes |
 | 11 | Mainstream provider (AWS/GCP/Azure/Vercel) for critical pieces, not budget hosts (Hetzner)? | Yes — budget hosts are fine for background jobs |
+| 12 | Is the code containerized (a Dockerfile that builds the thing that runs in prod)? | Yes |
 
 `references/audit-checklist.md` has, for each: how to detect it, why it matters, what good
 looks like, and the fix. Q0 has its own reference because it has a precise rule set.
@@ -122,7 +123,7 @@ downgrade an Unknown to a Yes because the API side looked fine.
 
 ### 4. Look outside AWS
 
-For Q4–Q7, Q10 and Q11 the account is half the picture. Read the repo: deploy configs
+For Q4–Q7 and Q10–Q12 the account is half the picture. Read the repo: `Dockerfile`s, deploy configs
 (`render.yaml`, `fly.toml`, `vercel.json`, `Procfile`, `serverless.yml`, `.github/workflows`),
 `docker-compose*.yml` for the production shape, `package.json`/`requirements.txt` for Sentry,
 Datadog, PostHog, Clerk, Auth0; `.env.example` for which external services exist. Resolve the
@@ -130,7 +131,7 @@ app's hostnames (`dig +short`, `whois` on the IPs) to see who actually hosts wha
 cannot verify — GitHub 2FA enforcement, the registrar's MFA, Atlas backups — ask the user and
 record the answer as "reported by user".
 
-### 5. Answer the twelve questions
+### 5. Answer the thirteen questions
 
 Work through `references/audit-checklist.md`. For each question write the answer
 (Yes / No / Partial / Unknown), the evidence with its source, why it matters *for this company*,
@@ -141,7 +142,7 @@ else on the list. Then collect the security hygiene items (checklist §S) with s
 
 ### 6. Write the report
 
-Use `references/report-template.md`: summary → scorecard (all twelve rows, always) → one
+Use `references/report-template.md`: summary → scorecard (all thirteen rows, always) → one
 section per question → security findings by severity → per-instance table → "this week / next
 / decisions" sequence → method and caveats. Lead with the worst thing. A "Yes, verified" is one
 line; do not pad it. A "No" without a fix, or a fix without the command, is not finished.
@@ -171,7 +172,8 @@ number of years with the user in so many words before creating the bucket.
 | "CloudTrail is enabled, Q0 is a Yes." | Enabled ≠ append-only. Run the rule table; COMPLIANCE-mode Object Lock on the bucket or it's a No. |
 | "There's an RDS instance, so the DB is managed." | Check what the app's `DATABASE_URL` actually points at. The RDS instance may be a leftover. |
 | "Backups are on by default for RDS." | `BackupRetentionPeriod` can be 0. DynamoDB PITR is off by default. Look. |
-| "It's Dockerized, so it's crash-resilient." | Docker without `--restart` on a bare EC2 is not. Fargate with a service is. |
+| "It's Dockerized, so it's crash-resilient." | Docker without `--restart` on a bare EC2 is not. Fargate with a service is. Q12 (containerized) and Q9 (resilient) are different questions. |
+| "There's a Dockerfile in the repo, Q12 is a Yes." | Only if prod runs *that image*. A Dockerfile for local dev while prod is `git pull && pm2 restart` on a box is a No. |
 | "They use Datadog, observability is done." | Does anything page a human? Ten dashboards and zero monitors is a No. |
 | "Vercel plus AWS is two providers, that's a flag." | A frontend host in front of a cloud backend is the normal shape. The flag is the *same layer* split, or three-plus compute providers. |
 | "Hetzner for the workers is a red flag." | Budget hosts for background/batch work are a good trade. Critical path is the concern. |
@@ -188,7 +190,7 @@ re-run, not a rediscovery.
 
 ## Reference files
 
-- `references/audit-checklist.md` — the twelve questions: detection, why, what good looks like, the fix; plus security hygiene with severities. Read during §5.
+- `references/audit-checklist.md` — the thirteen questions: detection, why, what good looks like, the fix; plus security hygiene with severities. Read during §5.
 - `references/cloudtrail-append-only.md` — the 14 required rules and 5 recommendations, a verified reference implementation, hand-check commands, and the fix script. Read for Q0.
 - `references/report-template.md` — scorecard report skeleton and per-question contract. Read during §6.
 - `scripts/aws-audit-inventory.sh` — read-only AWS inventory → JSON + `DIGEST.md` (with the CloudTrail verdict); run during §2. `--help` for flags.

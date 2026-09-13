@@ -117,7 +117,8 @@ probe autoscaling_groups autoscaling describe-auto-scaling-groups --query 'AutoS
 probe elbv2_load_balancers elbv2 describe-load-balancers --query 'LoadBalancers[].{Name:LoadBalancerName,Type:Type,Scheme:Scheme,AZs:length(AvailabilityZones),Arn:LoadBalancerArn}'
 probe elbv2_target_groups elbv2 describe-target-groups --query 'TargetGroups[].{Name:TargetGroupName,Protocol:Protocol,Port:Port,HC:HealthCheckPath,Type:TargetType}'
 probe ecs_clusters ecs list-clusters
-probe lambda_functions lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtime,Mem:MemorySize,Timeout:Timeout,Modified:LastModified,Role:Role,Env:length(Environment.Variables || `{}`)}'
+probe ecr_repositories ecr describe-repositories --query 'repositories[].{Name:repositoryName,Created:createdAt,ScanOnPush:imageScanningConfiguration.scanOnPush}'
+probe lambda_functions lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtime,Package:PackageType,Mem:MemorySize,Timeout:Timeout,Modified:LastModified,Role:Role,Env:length(Environment.Variables || `{}`)}'
 probe eb_environments elasticbeanstalk describe-environments --query 'Environments[].{Name:EnvironmentName,App:ApplicationName,Status:Status,Health:Health,Platform:PlatformArn}'
 probe apprunner_services apprunner list-services
 probe lightsail_instances lightsail get-instances --query 'instances[].{Name:name,Bundle:bundleId,State:state.name,Created:createdAt,Ip:publicIpAddress,Blueprint:blueprintId}'
