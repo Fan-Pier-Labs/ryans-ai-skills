@@ -5,6 +5,13 @@ description: Demo a pull request's changes on the PR itself — a recorded video
 
 # PR Demo Video
 
+> **Vendored copy — upload path superseded.** Steps 5–6 (gh-attach, browser
+> session, `/upload/policies/assets`) and the upload troubleshooting notes are
+> obsolete: `gh` ≥ 2.99 uploads media natively with `gh pr comment --attach`.
+> Follow step 6 of the parent `SKILL.md` for uploads; the rest of this file
+> (surfaces, iOS/CLI paths, recording script) still applies.
+
+
 Given a PR number, understand what the PR changes, run the app with video recording —
 Playwright for web surfaces, the iOS simulator for `expo-app/` changes — drive a short
 demo of the change, convert the recording to mp4, and post it to the PR as an embedded
