@@ -71,23 +71,37 @@ newer than the last commit. Never review the same head SHA twice.
    <!-- generic-coding-agents:auto-reviewer sha:<head_sha> -->
    ## ☢️ Thermo-nuclear review — `<head_sha short>`
 
-   **Verdict:** <would-approve | needs restructuring | blocking issues>
+   **Verdict:** <🔴 blocking issues | 🟡 needs restructuring | 🟢 would-approve>
 
    ### Findings
-   1. **<file:line — one-line claim>** — <why it matters, what the cleaner
+   1. 🔴 **<file:line — one-line claim>** — <why it matters, what the cleaner
       structure looks like. Quote the standard's priorities: structural
       regressions first, code-judo opportunities second, spaghetti growth
       third...>
+   2. 🟡 **<file:line — one-line claim>** — <...>
 
    ### What's good
-   <one or two lines — earned praise only, never filler>
+   🟢 <one or two lines — earned praise only, never filler>
    ```
+
+   **Status circles.** Every finding and the verdict carry a colored circle so
+   the severity is readable at a glance without parsing the prose:
+
+   | Circle | Meaning | When to use |
+   | --- | --- | --- |
+   | 🔴 | Block this PR | One of the standard's presumptive blockers (file crosses 1k lines, spaghetti branching in a shared path, missed code-judo move that would delete real complexity, boundary leak, duplicated canonical helper). Should not merge as-is. |
+   | 🟡 | Warn | A real maintainability cost worth fixing, but not on its own a reason to hold the PR. |
+   | 🟢 | Good | Used for the "What's good" section and for a would-approve verdict. Never attach 🟢 to a finding — a finding is by definition something to change. |
+
+   The verdict circle is the worst circle among the findings: any 🔴 finding
+   → 🔴 blocking issues; only 🟡 findings → 🟡 needs restructuring; no findings
+   → 🟢 would-approve. Do not downgrade a verdict below its worst finding.
 
    Follow the standard's output rules: a small number of high-conviction
    findings beats a long list of nits; findings ordered by the priority list in
-   the reference; direct tone, no softening, no rudeness. If the PR is genuinely
-   clean, say so in two sentences and stop — do not invent findings to justify
-   the comment.
+   the reference (so 🔴 items naturally sort first); direct tone, no softening,
+   no rudeness. If the PR is genuinely clean, say so in two sentences under a
+   🟢 verdict and stop — do not invent findings to justify the comment.
 
 4. **Clean up**: `rm -rf "$dir"` and kill anything you started.
 
