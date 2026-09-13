@@ -1,12 +1,12 @@
 ---
 name: auto-reviewer
-description: Continuously scan every open, non-draft pull request across the Fan-Pier-Labs and ryanhugh GitHub accounts and post a deep thermo-nuclear code-quality review on any PR whose latest commits have not yet been reviewed. Use whenever the user asks to start the auto reviewer, review open PRs, babysit PRs, "run the review agent", "review anything that needs it", or wants continuous/automatic PR review coverage — even if they don't name the skill explicitly.
+description: Continuously scan every open, non-draft pull request across the configured GitHub accounts (OWNERS; defaults to the authenticated gh user and their orgs) and post a deep thermo-nuclear code-quality review on any PR whose latest commits have not yet been reviewed. Use whenever the user asks to start the auto reviewer, review open PRs, babysit PRs, "run the review agent", "review anything that needs it", or wants continuous/automatic PR review coverage — even if they don't name the skill explicitly.
 ---
 
 # Auto Reviewer Agent
 
 A long-running review agent. Each pass it finds open, non-draft PRs in the
-`Fan-Pier-Labs` and `ryanhugh` orgs that have had commits in the last 7 days and
+configured owners (`OWNERS`) that have had commits in the last 7 days and
 have received **no feedback since their latest commit**, then runs a
 thermo-nuclear code-quality review on each and posts the findings as a PR
 comment.
@@ -109,4 +109,4 @@ newer than the last commit. Never review the same head SHA twice.
 ## Tuning
 
 The script reads env vars: `DAYS` (activity window, default 7), `OWNERS`
-(space-separated, default `Fan-Pier-Labs ryanhugh`), `MARKER` (comment marker).
+(space-separated GitHub users/orgs; default: the authenticated `gh` user plus their orgs), `MARKER` (comment marker).

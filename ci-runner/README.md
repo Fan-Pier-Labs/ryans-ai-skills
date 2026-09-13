@@ -48,13 +48,13 @@ Three options, in increasing order of immediacy:
    needed:
 
    ```bash
-   gh webhook forward --repo=Fan-Pier-Labs/openrecord --events=push,pull_request --url=http://localhost:9000/hook
+   gh webhook forward --repo=<owner>/<repo> --events=push,pull_request --url=http://localhost:9000/hook
    ```
 
-   Org-level (`--org=Fan-Pier-Labs`) covers every repo at once. Caveats: the
+   Org-level (`--org=<org>`) covers every repo at once. Caveats: the
    forwarder is a long-lived foreground process per repo/org, it's built for
    development use (reconnects, but not guaranteed delivery), and personal
-   accounts (`ryanhugh`) need per-repo forwarding. A tiny local receiver that
+   accounts need per-repo forwarding. A tiny local receiver that
    runs `ci-runner.sh` on each delivery turns this into push-triggered CI.
    Missed deliveries are covered by keeping a slow fallback sweep (say,
    hourly) — the commit-status ledger makes overlap harmless.

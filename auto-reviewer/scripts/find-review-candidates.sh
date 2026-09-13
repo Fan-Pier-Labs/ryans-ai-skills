@@ -6,10 +6,15 @@
 #   - has had commits within the last $DAYS days, and
 #   - has no review and no auto-reviewer marker comment newer than its latest commit.
 #
-# Env: OWNERS (default "Fan-Pier-Labs ryanhugh"), DAYS (default 7), MARKER.
+# Env: OWNERS (default: authenticated gh user + their orgs), DAYS (default 7), MARKER.
 set -uo pipefail
 
-OWNERS=(${OWNERS:-Fan-Pier-Labs ryanhugh})
+# OWNERS: space-separated GitHub users/orgs to scan. Defaults to the
+# authenticated `gh` user plus every org that account belongs to.
+if [[ -z "${OWNERS:-}" ]]; then
+  OWNERS=$( { gh api user --jq .login; gh api user/orgs --paginate --jq '.[].login'; } 2>/dev/null | tr '\n' ' ')
+fi
+OWNERS=($OWNERS)
 DAYS="${DAYS:-7}"
 MARKER="${MARKER:-generic-coding-agents:auto-reviewer}"
 

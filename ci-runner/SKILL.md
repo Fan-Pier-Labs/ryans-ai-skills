@@ -1,12 +1,12 @@
 ---
 name: ci-runner
-description: Run CI locally for every open pull request across the Fan-Pier-Labs and ryanhugh GitHub accounts — a stand-in for GitHub Actions while the account is out of CI credits. Executes each repo's own .github/workflows YAML on this machine via a workflow interpreter, and posts the result back as a commit status (plus a log comment on failure). Use whenever the user asks to run CI on PRs, "check if my PRs pass", start the CI agent, run tests across open PRs, or mentions GitHub Actions being out of credits/minutes.
+description: Run CI locally for every open pull request across the configured GitHub accounts (OWNERS; defaults to the authenticated gh user and their orgs) — a stand-in for GitHub Actions while the account is out of CI credits. Executes each repo's own .github/workflows YAML on this machine via a workflow interpreter, and posts the result back as a commit status (plus a log comment on failure). Use whenever the user asks to run CI on PRs, "check if my PRs pass", start the CI agent, run tests across open PRs, or mentions GitHub Actions being out of credits/minutes.
 ---
 
 # CI Runner Agent
 
-GitHub Actions credits are exhausted on the Fan-Pier-Labs account, so this
-agent runs CI on the local machine instead. It is **entirely deterministic** —
+When GitHub Actions credits/minutes are exhausted, this agent runs CI on the
+local machine instead. It is **entirely deterministic** —
 one script does everything, and once started it needs no model judgment:
 
 ```bash
@@ -45,7 +45,7 @@ to "start the CI runner", run it on an interval — `/loop 10m` in Claude Code,
 or plain cron:
 
 ```bash
-*/10 * * * * /Users/ryanhughes/Desktop/code/generic-coding-agents/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
+*/10 * * * * /path/to/generic-coding-agents/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
 ```
 
 For push-driven runs instead of polling (`gh webhook forward`, Events-API
@@ -71,7 +71,7 @@ result, duration) to the user. Zero-work sweeps are normal.
 
 ## Tuning
 
-Env vars: `OWNERS` (default `Fan-Pier-Labs ryanhugh`), `DAYS` (repo-activity
+Env vars: `OWNERS` (space-separated users/orgs; default: the authenticated `gh` user plus their orgs), `DAYS` (repo-activity
 window, default 30), `STATUS_CONTEXT` (default `local-ci`), `KEEP_WORK=1` to
 keep work directories for debugging. Secrets a workflow needs (e.g.
-`CALENDAR_TEST_CREDS_JSON`) can be exported in the sweep's environment.
+`SOME_API_TEST_CREDS`) can be exported in the sweep's environment.

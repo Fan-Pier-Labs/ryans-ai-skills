@@ -1,11 +1,11 @@
 ---
 name: dependency-updater
-description: Sweep every recently active repo in the Fan-Pier-Labs and ryanhugh GitHub accounts, update its dependencies (npm/bun package.json, Python requirements/pyproject, Cargo, Go modules), verify by launching the app and running the full test suite, and open one pull request per repo. Use whenever the user asks to update dependencies, bump deps, run the updater agent, "freshen packages across my repos", or deal with outdated/vulnerable dependencies — even for a single repo.
+description: Sweep every recently active repo in the configured GitHub accounts (OWNERS; defaults to the authenticated gh user and their orgs), update its dependencies (npm/bun package.json, Python requirements/pyproject, Cargo, Go modules), verify by launching the app and running the full test suite, and open one pull request per repo. Use whenever the user asks to update dependencies, bump deps, run the updater agent, "freshen packages across my repos", or deal with outdated/vulnerable dependencies — even for a single repo.
 ---
 
 # Dependency Updater Agent
 
-Updates dependencies across every repo in `Fan-Pier-Labs` and `ryanhugh` that
+Updates dependencies across every repo in the configured owners (`OWNERS`) that
 has had activity in the last month, verifies each repo still **builds, launches,
 and passes its tests** after the bump, and opens a PR per repo. Never merges.
 

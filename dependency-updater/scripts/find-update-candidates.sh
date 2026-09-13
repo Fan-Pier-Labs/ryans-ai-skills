@@ -6,7 +6,12 @@
 # where open_update_pr is the number of an existing open deps/auto-update-* PR, or null.
 set -uo pipefail
 
-OWNERS=(${OWNERS:-Fan-Pier-Labs ryanhugh})
+# OWNERS: space-separated GitHub users/orgs to scan. Defaults to the
+# authenticated `gh` user plus every org that account belongs to.
+if [[ -z "${OWNERS:-}" ]]; then
+  OWNERS=$( { gh api user --jq .login; gh api user/orgs --paginate --jq '.[].login'; } 2>/dev/null | tr '\n' ' ')
+fi
+OWNERS=($OWNERS)
 DAYS="${DAYS:-30}"
 
 if date -u -v-1d +%s >/dev/null 2>&1; then

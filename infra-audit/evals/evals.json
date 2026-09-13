@@ -9,7 +9,7 @@
     },
     {
       "id": 2,
-      "prompt": "can you check whether our aws account (profile fanpierlabs) has cloudtrail set up properly? i want to make sure the logs can't be deleted",
+      "prompt": "can you check whether our aws account (profile acme) has cloudtrail set up properly? i want to make sure the logs can't be deleted",
       "expected_output": "Runs the inventory (or the hand-check commands) and produces the 14-rule PASS/FAIL table for the trail: multi-region, global events, read+write management events, log file validation, Object Lock enabled, COMPLIANCE default retention >= 1y, a real object carrying COMPLIANCE retention, versioning, four public-access blocks, deny DeleteBucket/DeleteBucketPolicy, CloudTrail-only write with SourceAccount condition, encryption. Then the recommendations (KMS, lifecycle expiry, tamper alerting, org trail) as WARN, not FAIL. Does not create or modify anything without being asked, and if asked to fix, confirms the retention years explicitly first.",
       "files": []
     },

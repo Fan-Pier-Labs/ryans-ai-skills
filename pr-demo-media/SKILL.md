@@ -1,11 +1,11 @@
 ---
 name: pr-demo-media
-description: Scan open, non-draft frontend pull requests across the Fan-Pier-Labs and ryanhugh GitHub accounts, spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR with `gh pr comment --attach`. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
+description: Scan open, non-draft frontend pull requests across the configured GitHub accounts (OWNERS; defaults to the authenticated gh user and their orgs), spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR with `gh pr comment --attach`. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
 ---
 
 # PR Demo Media Agent
 
-Finds open, non-draft **frontend** PRs in `Fan-Pier-Labs` and `ryanhugh` that
+Finds open, non-draft **frontend** PRs in the configured owners (`OWNERS`) that
 don't yet have a demo for their latest commits, runs each PR's app, captures
 the change as either a **video** or **screenshot(s)** — whichever demos it
 better — and posts it as an embedded PR comment via `gh pr comment --attach`.
