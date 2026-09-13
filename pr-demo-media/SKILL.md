@@ -16,9 +16,8 @@ This is the generalized successor of
 `.claude/skills/pr-demo-*` skill, read it and follow its repo-specific parts**
 (launch commands, test credentials, iOS/CLI paths) — it knows things this
 generic skill can't. This skill supplies the loop, the media decision, and the
-generic web flow. **Ignore any repo skill's upload instructions** (gh-attach,
-browser sessions, `/upload/policies/assets`) — those predate `gh --attach`;
-step 6 below is the upload path.
+generic web flow. Uploads always go through step 6 below, whatever an
+older repo skill says.
 
 ## The loop
 

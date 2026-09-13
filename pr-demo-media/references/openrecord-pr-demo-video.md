@@ -5,12 +5,6 @@ description: Demo a pull request's changes on the PR itself — a recorded video
 
 # PR Demo Video
 
-> **Vendored copy — upload path superseded.** Steps 5–6 (gh-attach, browser
-> session, `/upload/policies/assets`) and the upload troubleshooting notes are
-> obsolete: `gh` ≥ 2.99 uploads media natively with `gh pr comment --attach`.
-> Follow step 6 of the parent `SKILL.md` for uploads; the rest of this file
-> (surfaces, iOS/CLI paths, recording script) still applies.
-
 
 Given a PR number, understand what the PR changes, run the app with video recording —
 Playwright for web surfaces, the iOS simulator for `expo-app/` changes — drive a short
@@ -23,12 +17,8 @@ Two pieces of tooling do the heavy lifting — do not reimplement either:
   sanctioned exception to the "always use playwright-cli" rule: video recording requires
   `recordVideo` on a browser context, which only the library exposes. Playwright is
   already a root devDependency in this repo.
-- **`gh-attach`** (`~/Desktop/code/cli-apps/gh-attach-cli`) handles the GitHub upload.
-  GitHub's REST API has no attachment-upload endpoint; this tool reverse-engineers the
-  web UI's flow (`POST /upload/policies/assets` → presigned S3 POST → finalize) riding
-  on a browser-bootstrapped web session. It can upload *and* post the embedding comment
-  in one command. Run it as `cd ~/Desktop/code/cli-apps/gh-attach-cli && bun run src/cli.ts <cmd>`
-  (check `which gh-attach` first — use the linked binary if present).
+- **`gh pr comment --attach`** (gh ≥ 2.99) uploads the video and posts the embedding
+  comment in one command, using the normal `gh auth` login.
 
 **Hard rule: demo against fake data only.** Record against fake-mychart
 (`homer`/`donuts123`) or the splash demo's fictional patient — never a real MyChart
@@ -183,7 +173,7 @@ not involved.
 
 5. **Same tail as the web path**: convert the .mov with the Step 4 ffmpeg command
    (output is portrait ~1206×2622 — fine as-is), frame-verify with Step 3's extraction,
-   upload with Steps 5–6. When done, `xcrun simctl shutdown "$MAESTRO_UDID" && xcrun
+   upload with Step 5. When done, `xcrun simctl shutdown "$MAESTRO_UDID" && xcrun
    simctl delete "$MAESTRO_UDID"`.
 
 ## CLI and MCPB demos (terminal transcripts, not video)
@@ -207,7 +197,7 @@ JSON to the relevant part with a `…` and say it's trimmed. Fake-mychart creden
 (`homer`/`donuts123`) are fine to show; nothing real must appear.
 
 Text needs no attachment upload, so post with plain `gh pr comment <N> --body "..."`
-(Steps 5–6 don't apply). Format:
+(Step 5 doesn't apply). Format:
 
 ````markdown
 🎬 **Automated demo** — `<capability>` through the built CLI against fake-mychart
@@ -234,39 +224,22 @@ ffmpeg -y -i demo.webm -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 2
 (`yuv420p` is required — without it Safari and the GitHub player can refuse the file.)
 Keep it well under GitHub's 100 MB video cap; a 60s 720p demo is a few MB.
 
-## Step 5 — GitHub session
+## Step 5 — Upload and post the comment
+
+Requires `gh` 2.99.0+ (`gh --version`; `brew upgrade gh` if older) and a logged-in
+`gh auth status`. One command uploads and posts the embedding comment:
 
 ```bash
-cd ~/Desktop/code/cli-apps/gh-attach-cli && bun run src/cli.ts whoami
+gh pr comment <N> \
+  --body "🎬 **Automated demo** — <one line: what the video shows and which flow it drives>" \
+  --attach /path/to/demo.mp4
 ```
 
-- Logged in → note **which account** it is; that account authors the comment. If it's
-  the wrong one, treat as expired.
-- Expired / not logged in → run `bun run src/cli.ts login` (headed Chrome opens at
-  github.com/login) and tell the user to sign in **themselves** in that window,
-  including any 2FA. Never fill the credentials for them — don't use the `--user` /
-  `--password` flags, even if the credentials are available somewhere. The command
-  blocks until the session cookie appears (5-minute timeout), then caches it in
-  `~/.gh-attach/session.json`. Sessions last roughly two weeks.
+The attachment is appended to the body and renders as a video player. The command
+prints the comment URL — put it in the final report. If the upload fails, `gh` says
+so; fix the file and re-run with `--edit-last` rather than posting a second comment.
 
-## Step 6 — Upload and post the comment
-
-One command uploads and posts the embedding comment:
-
-```bash
-cd ~/Desktop/code/cli-apps/gh-attach-cli && bun run src/cli.ts upload \
-  -r <owner>/<repo> --pr <N> \
-  --body "🎬 **Automated demo** — <one line: what the video shows and which flow it drives>
-
-{markdown}" \
-  /path/to/demo.mp4 --json
-```
-
-`{markdown}` is replaced by the asset embed. Get `<owner>/<repo>` from
-`gh repo view --json nameWithOwner -q .nameWithOwner`. The `--json` output includes the
-asset URL and the posted comment — put the comment URL in the final report.
-
-## Step 7 — Clean up
+## Step 6 — Clean up
 
 Kill any servers started for the demo, then:
 
@@ -297,17 +270,10 @@ Lessons from real runs of the iOS path:
   startup dead time, so a 10-beat flow lands around 2–3 minutes. Speed it up in post —
   `ffmpeg -i demo.mov -vf "setpts=PTS/2.5,fps=30" -an ...` — and say so in the comment.
 
-- **Upload fails with 4xx**: GitHub occasionally changes the private endpoints. Debug as
-  a request-shape problem first (cookies, `GitHub-Verified-Fetch: true` header, field
-  names) before blaming bot detection. The whole flow is readable in
-  `~/Desktop/code/cli-apps/gh-attach-cli/src/client.ts`.
+- **Upload fails**: check `gh --version` is ≥ 2.99 and `gh auth status` is logged in;
+  then the file itself — over 100 MB, or a codec GitHub's player rejects (re-encode
+  with the ffmpeg line in Step 4).
 - **Video file is empty/tiny**: the context wasn't closed. `context.close()` must run
   before the file is read.
 - **Blank frames at the start**: normal — recording starts before the first `goto`
   paints. Lead with a caption + pause rather than trimming.
-- **`gh-attach` repo missing on this machine**: fall back to writing the three-step
-  upload against `POST https://github.com/upload/policies/assets` (multipart:
-  `repository_id`, `name`, `size`, `content_type`; header `GitHub-Verified-Fetch: true`;
-  session cookies from a Playwright-bootstrapped login) → S3 POST → `PUT` finalize.
-  The repository id is in `<meta name="octolytics-dimension-repository_id">` on any
-  repo page.
