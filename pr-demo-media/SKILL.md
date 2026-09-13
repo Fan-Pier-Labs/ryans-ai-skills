@@ -1,6 +1,6 @@
 ---
 name: pr-demo-media
-description: Scan open, non-draft frontend pull requests across the Fan-Pier-Labs and ryanhugh GitHub accounts, spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR via GitHub's undocumented asset-upload API (gh-attach). Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
+description: Scan open, non-draft frontend pull requests across the Fan-Pier-Labs and ryanhugh GitHub accounts, spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR with `gh pr comment --attach`. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
 ---
 
 # PR Demo Media Agent
@@ -8,7 +8,7 @@ description: Scan open, non-draft frontend pull requests across the Fan-Pier-Lab
 Finds open, non-draft **frontend** PRs in `Fan-Pier-Labs` and `ryanhugh` that
 don't yet have a demo for their latest commits, runs each PR's app, captures
 the change as either a **video** or **screenshot(s)** — whichever demos it
-better — and posts it as an embedded PR comment.
+better — and posts it as an embedded PR comment via `gh pr comment --attach`.
 
 This is the generalized successor of
 `Fan-Pier-Labs/openrecord/.claude/skills/pr-demo-video` (vendored at
@@ -16,7 +16,8 @@ This is the generalized successor of
 `.claude/skills/pr-demo-*` skill, read it and follow its repo-specific parts**
 (launch commands, test credentials, iOS/CLI paths) — it knows things this
 generic skill can't. This skill supplies the loop, the media decision, and the
-generic web flow.
+generic web flow. Uploads always go through step 6 below, whatever an
+older repo skill says.
 
 ## The loop
 
@@ -148,39 +149,48 @@ If the feature isn't clearly visible, fix and re-capture. Also: **fake data
 only** — never a real account, credential, or personal data on screen; use the
 repo's test/demo fixtures.
 
-### 6. Upload and post — GitHub's undocumented asset API
+### 6. Upload and post — `gh pr comment --attach`
 
-GitHub's REST API has **no** attachment-upload endpoint. `gh-attach`
-(`~/Desktop/code/cli-apps/gh-attach-cli`) reverse-engineers the web UI's flow
-(`POST /upload/policies/assets` → presigned S3 POST → finalize) on a
-browser-bootstrapped session, and can upload + post the embedding comment in
-one command. It handles mp4 and images alike.
-
-```bash
-cd ~/Desktop/code/cli-apps/gh-attach-cli && bun run src/cli.ts whoami
-```
-
-Expired/absent session → `bun run src/cli.ts login` opens headed Chrome at
-github.com/login; the **user signs in themselves** (never fill credentials for
-them, never use `--user`/`--password`). Then:
+`gh` ≥ 2.99 uploads images and video natively (`--attach` on `pr comment`,
+`pr create`, `pr edit`; up to 50 files per command). Requires `gh --version`
+2.99.0+ (`brew upgrade gh` if older) and a normal `gh auth status` login —
+no browser session, no third-party tool.
 
 ```bash
-bun run src/cli.ts upload -r <owner>/<repo> --pr <N> \
+gh pr comment <N> -R <owner>/<repo> \
   --body "<!-- generic-coding-agents:pr-demo-media sha:<head_sha> -->
-🎬 **Automated demo** — <one line: what it shows and which flow it drives>
-
-{markdown}" \
-  demo.mp4 --json
+🎬 **Automated demo** — <one line: what it shows and which flow it drives>" \
+  --attach demo.mp4
 ```
 
-`{markdown}` is replaced with the asset embed; pass multiple files for a
-before/after pair and label each in the body ("**Before** / **After**"). The
-marker line is what makes the discovery script idempotent — never omit it.
-The `--json` output has the comment URL for your report. If the tool breaks
-(GitHub shifts the private endpoints), debug it as a request-shape problem —
-cookies, `GitHub-Verified-Fetch: true` header, field names — in
-`gh-attach-cli/src/client.ts`; the fallback recipe is in the vendored
-reference's troubleshooting section.
+Files the body doesn't reference are appended to the end of the comment, so
+for a single video the body is just the marker + summary. For a before/after
+pair, reference the files in the body so the labels sit next to the right
+image — `gh` rewrites each `![...](./file)` to the uploaded asset URL:
+
+```bash
+gh pr comment <N> -R <owner>/<repo> \
+  --body "<!-- generic-coding-agents:pr-demo-media sha:<head_sha> -->
+🎬 **Automated demo** — <summary>
+
+**Before**
+![before](./before.png)
+
+**After**
+![after](./after.png)" \
+  --attach ./before.png --attach ./after.png
+```
+
+Alt text for images goes after a `#` in the flag (`--attach './after.png#New
+empty state'`); video renders as a player and takes no alt text. The command
+prints the comment URL — put it in your report. The marker line is what makes
+the discovery script idempotent — never omit it.
+
+If some attachments fail, `gh` still posts the comment with the ones that
+worked and reports the failures — check the output, fix the file (usually
+size, or a codec GitHub's player rejects: re-encode with the `ffmpeg` line in
+step 4), and `gh pr comment <N> --edit-last --attach <file>` rather than
+posting a second comment.
 
 ### 7. Clean up and report
 
