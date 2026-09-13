@@ -7,14 +7,15 @@ credentials (or an engineer covering a mistake) deletes the log bucket and the i
 happened. `scripts/aws-audit-inventory.sh` evaluates every rule below and prints a PASS/FAIL
 table in `DIGEST.md`; this file is the rationale and the fix.
 
-## Reference implementation (Fan Pier Labs, account 555985150976)
+## Reference implementation
 
-This is the shape to match. Verified 2026-09-07 with the commands in §3.
+This is the shape to match, taken from a real account that passes every rule below (verified
+2026-09-07 with the commands in §3).
 
 | Component | Setting |
 |---|---|
-| Trail | `fanpierlabs-management-trail`, home region us-east-2, **multi-region**, **global service events on**, management events read+write, **log file validation on**, logging since 2026-04-03, digests delivering |
-| Bucket | `fanpierlabs-cloudtrail-immutable` |
+| Trail | `<company>-management-trail`, one home region, **multi-region**, **global service events on**, management events read+write, **log file validation on**, logging continuously since creation, digests delivering |
+| Bucket | `<company>-cloudtrail-immutable` |
 | Object Lock | **Enabled, default retention COMPLIANCE, 2 years** — every delivered object gets `RetainUntilDate = delivery + 2y`; not even root can shorten or delete before then |
 | Versioning | Enabled (required by Object Lock) |
 | Public access block | all four on |

@@ -1,12 +1,12 @@
 ---
 name: auto-reviewer
-description: Continuously scan every open, non-draft pull request across the Fan-Pier-Labs and ryanhugh GitHub accounts and post a deep thermo-nuclear code-quality review on any PR whose latest commits have not yet been reviewed. Use whenever the user asks to start the auto reviewer, review open PRs, babysit PRs, "run the review agent", "review anything that needs it", or wants continuous/automatic PR review coverage — even if they don't name the skill explicitly.
+description: Continuously scan every open, non-draft pull request in the current repo (or the repos/orgs given via REPOS/OWNERS) and post a deep thermo-nuclear code-quality review on any PR whose latest commits have not yet been reviewed. Use whenever the user asks to start the auto reviewer, review open PRs, babysit PRs, "run the review agent", "review anything that needs it", or wants continuous/automatic PR review coverage — even if they don't name the skill explicitly.
 ---
 
 # Auto Reviewer Agent
 
 A long-running review agent. Each pass it finds open, non-draft PRs in the
-`Fan-Pier-Labs` and `ryanhugh` orgs that have had commits in the last 7 days and
+target repos (the current repo by default) that have had commits in the last 7 days and
 have received **no feedback since their latest commit**, then runs a
 thermo-nuclear code-quality review on each and posts the findings as a PR
 comment.
@@ -21,6 +21,16 @@ Two files do the work:
   full before reviewing the first PR of a session.** It defines the review
   rules, the tone, what to flag, and the output priorities. It is deliberately
   harsh; do not soften it.
+
+## Which repos
+
+By default every script targets **the repo you are currently in** (resolved from
+`git remote get-url origin`). It never enumerates the user's GitHub account. To
+widen the scope, set `REPOS='owner/repo ...'` or `OWNERS='org user ...'` (owners
+are expanded to their repos pushed within `DAYS`). If the script exits with
+`could not determine the target repo`, **ask the user which repo(s) or org(s) to
+target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
+scan their account.
 
 ## The loop
 
@@ -122,5 +132,6 @@ newer than the last commit. Never review the same head SHA twice.
 
 ## Tuning
 
-The script reads env vars: `DAYS` (activity window, default 7), `OWNERS`
-(space-separated, default `Fan-Pier-Labs ryanhugh`), `MARKER` (comment marker).
+The script reads env vars: `DAYS` (activity window, default 7), `REPOS`
+(space-separated `owner/repo`), `OWNERS` (space-separated GitHub users/orgs), `MARKER`
+(comment marker). With neither `REPOS` nor `OWNERS` set it targets the current repo.

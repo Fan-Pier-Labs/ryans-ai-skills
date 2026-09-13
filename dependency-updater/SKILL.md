@@ -1,13 +1,23 @@
 ---
 name: dependency-updater
-description: Sweep every recently active repo in the Fan-Pier-Labs and ryanhugh GitHub accounts, update its dependencies (npm/bun package.json, Python requirements/pyproject, Cargo, Go modules), verify by launching the app and running the full test suite, and open one pull request per repo. Use whenever the user asks to update dependencies, bump deps, run the updater agent, "freshen packages across my repos", or deal with outdated/vulnerable dependencies — even for a single repo.
+description: Update dependencies in the current repo (or every recently active repo in the repos/orgs given via REPOS/OWNERS) (npm/bun package.json, Python requirements/pyproject, Cargo, Go modules), verify by launching the app and running the full test suite, and open one pull request per repo. Use whenever the user asks to update dependencies, bump deps, run the updater agent, "freshen packages across my repos", or deal with outdated/vulnerable dependencies — even for a single repo.
 ---
 
 # Dependency Updater Agent
 
-Updates dependencies across every repo in `Fan-Pier-Labs` and `ryanhugh` that
-has had activity in the last month, verifies each repo still **builds, launches,
+Updates dependencies in the target repos (the current repo by default; with
+`OWNERS`, every repo there active in the last month), verifies each repo still **builds, launches,
 and passes its tests** after the bump, and opens a PR per repo. Never merges.
+
+## Which repos
+
+By default every script targets **the repo you are currently in** (resolved from
+`git remote get-url origin`). It never enumerates the user's GitHub account. To
+widen the scope, set `REPOS='owner/repo ...'` or `OWNERS='org user ...'` (owners
+are expanded to their repos pushed within `DAYS`). If the script exits with
+`could not determine the target repo`, **ask the user which repo(s) or org(s) to
+target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
+scan their account.
 
 ## Workflow
 
@@ -17,9 +27,10 @@ and passes its tests** after the bump, and opens a PR per repo. Never merges.
 scripts/find-update-candidates.sh
 ```
 
-Emits one JSON line per repo pushed in the last 30 days:
-`{repo, pushedAt, open_update_pr}`. Skip archived repos and forks (the script
-already does). If `open_update_pr` is non-null, a previous update PR is still
+Emits one JSON line per target repo:
+`{repo, pushedAt, open_update_pr}`. When expanding `OWNERS` the script skips
+archived repos, forks, and repos not pushed in the last 30 days; a repo named
+explicitly (or the current checkout) is always included. If `open_update_pr` is non-null, a previous update PR is still
 open — **update that branch instead of opening a second PR**, or skip the repo
 if the existing PR is already current.
 

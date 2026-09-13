@@ -189,7 +189,7 @@ re-run, not a rediscovery.
 ## Reference files
 
 - `references/audit-checklist.md` — the twelve questions: detection, why, what good looks like, the fix; plus security hygiene with severities. Read during §5.
-- `references/cloudtrail-append-only.md` — the 14 required rules and 5 recommendations, the Fan Pier Labs reference implementation, hand-check commands, and the fix script. Read for Q0.
+- `references/cloudtrail-append-only.md` — the 14 required rules and 5 recommendations, a verified reference implementation, hand-check commands, and the fix script. Read for Q0.
 - `references/report-template.md` — scorecard report skeleton and per-question contract. Read during §6.
 - `scripts/aws-audit-inventory.sh` — read-only AWS inventory → JSON + `DIGEST.md` (with the CloudTrail verdict); run during §2. `--help` for flags.
 - `scripts/audit-digest.py` — builds the digest from the JSON; re-run alone if you edit the rules.
