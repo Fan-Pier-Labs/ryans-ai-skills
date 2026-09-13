@@ -10,9 +10,7 @@ don't yet have a demo for their latest commits, runs each PR's app, captures
 the change as either a **video** or **screenshot(s)** — whichever demos it
 better — and posts it as an embedded PR comment via `gh pr comment --attach`.
 
-This is the generalized successor of
-`Fan-Pier-Labs/openrecord/.claude/skills/pr-demo-video` (vendored at
-`references/openrecord-pr-demo-video.md`). **If the target repo has its own
+**If the target repo has its own
 `.claude/skills/pr-demo-*` skill, read it and follow its repo-specific parts**
 (launch commands, test credentials, iOS/CLI paths) — it knows things this
 generic skill can't. This skill supplies the loop, the media decision, and the
@@ -181,8 +179,7 @@ gh pr comment <N> -R <owner>/<repo> \
   --attach ./before.png --attach ./after.png
 ```
 
-Alt text for images goes after a `#` in the flag (`--attach './after.png#New
-empty state'`); video renders as a player and takes no alt text. The command
+The command
 prints the comment URL — put it in your report. The marker line is what makes
 the discovery script idempotent — never omit it.
 
@@ -199,8 +196,8 @@ why, the beats shown, and the comment URL.
 
 ## Special surfaces
 
-The vendored openrecord skill covers two paths worth reusing anywhere they
-apply — read it when you hit them:
+If we are working on an iOS app or Android app you will have to fire up a simulator and control it with maestro to generate this video. 
+
 - **iOS/Expo PRs**: simulator + `simctl recordVideo`, driven natively.
 - **CLI/MCP PRs**: a verbatim terminal transcript beats a video of text; post
   with plain `gh pr comment`. (These aren't "frontend" candidates from the
