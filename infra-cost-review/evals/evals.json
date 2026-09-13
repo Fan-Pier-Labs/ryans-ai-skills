@@ -1,0 +1,23 @@
+{
+  "skill_name": "infra-cost-review",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Our AWS bill for the pete-aws-2026 account (profile pete-aws-2026, us-east-1) is around $840/month and has been for a while. Can you figure out where it's going and what we can safely cut? Write it up in plans/ — Pete's going to read it, he's not an engineer. You can SSH into the boxes as ubuntu with ~/.ssh/pete.pem if that helps.",
+      "expected_output": "Runs the read-only inventory, then the discover step and asks (or uses the offered key) to sweep every running instance before making any utilisation claim. A tiered report (A waste / B rightsizing / C decisions / handed-to-infra-audit). Must catch that stopped Lightsail instances bill full price, count idle public IPv4 (incl. ALBs across >2 AZs), use on-box memory/traffic/login evidence (not CPU alone) for any downsizing, give exact commands with --profile, label target prices as estimates, hand off any self-hosted DB / secrets-on-disk to infra-audit in one line each, and run nothing destructive.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "we're paying ~$400/mo on aws for what is basically a side project. 3 ec2 instances, an rds postgres, some s3. i think at least one of the ec2s is doing nothing. can you tell me which ones i can turn off? profile is sideproj",
+      "expected_output": "Does not call anything idle from CPU alone. Requests SSH/SSM access to the three instances, uses access-log real traffic (scanner-filtered), last logins, last deploy and memory sample as the second signal, then tiers each box: A only with two signals, otherwise C with what the owner needs to confirm. Mentions the EBS + EIP that keep billing on a stopped instance, snapshots before any termination, and gives a landing-point range.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I need a stable outbound IP so a partner can whitelist us. I was going to add a NAT gateway and put a Lambda behind it in a private subnet. Is that the right call for ~50 requests a day, or is there something simpler?",
+      "expected_output": "Questions the NAT gateway for trivial volume (hourly billing ~$33/mo), offers the t4g.nano / EIP-on-instance alternative with the patching tradeoff stated, notes an EIP can move to a NAT later without re-whitelisting, suggests verifying the partner's allowlist is actually enforced before building, gives costs as estimates from a source. Does not run the full inventory for a design question.",
+      "files": []
+    }
+  ]
+}
