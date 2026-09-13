@@ -202,3 +202,23 @@ If we are working on an iOS app or Android app you will have to fire up a simula
 - **CLI/MCP PRs**: a verbatim terminal transcript beats a video of text; post
   with plain `gh pr comment`. (These aren't "frontend" candidates from the
   script, but the user may ask directly.)
+- **Electron PRs**: same flow, different launcher. Build the app first (the
+  repo's `npm run build` / `electron-vite build`), then drive the built main
+  bundle with Playwright's Electron driver instead of `chromium.launch`:
+
+  ```ts
+  import { _electron as electron } from 'playwright';
+  const app = await electron.launch({
+    args: [join(process.cwd(), 'out', 'main', 'index.js')],
+    env: { ...process.env, /* repo's scratch data dir + headless/demo flags */ },
+    recordVideo: { dir: '/tmp/pr-demo-media', size: { width: 1280, height: 800 } },
+  });
+  const page = await app.firstWindow();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // ... beats as above; page.video().path() then app.close() to flush.
+  ```
+
+  Look for the repo's e2e fixtures (`tests/e2e/fixtures.ts` or similar) — they
+  usually already know the data-dir env var, the headless flag, and a demo /
+  fake-mailbox mode, which is also your fake-data source. `playwright` resolves
+  transitively from `@playwright/test`; run the script with `npx tsx`.
