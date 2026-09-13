@@ -154,22 +154,28 @@ repo's test/demo fixtures.
 2.99.0+ (`brew upgrade gh` if older) and a normal `gh auth status` login —
 no browser session, no third-party tool.
 
+**The comment is the media, nothing else.** No summary of what the PR does,
+no explanation of the change, no list of beats — the PR description already
+covers that, and the captions inside the video carry the context. The body is
+the marker line plus a one-word heading; the only other text allowed is a
+**Before** / **After** label on a screenshot pair.
+
 ```bash
 gh pr comment <N> -R <owner>/<repo> \
   --body "<!-- generic-coding-agents:pr-demo-media sha:<head_sha> -->
-🎬 **Automated demo** — <one line: what it shows and which flow it drives>" \
+🎬 **Demo**" \
   --attach demo.mp4
 ```
 
 Files the body doesn't reference are appended to the end of the comment, so
-for a single video the body is just the marker + summary. For a before/after
+for a single video the body is just the marker + heading. For a before/after
 pair, reference the files in the body so the labels sit next to the right
 image — `gh` rewrites each `![...](./file)` to the uploaded asset URL:
 
 ```bash
 gh pr comment <N> -R <owner>/<repo> \
   --body "<!-- generic-coding-agents:pr-demo-media sha:<head_sha> -->
-🎬 **Automated demo** — <summary>
+🎬 **Demo**
 
 **Before**
 ![before](./before.png)
@@ -191,8 +197,8 @@ posting a second comment.
 
 ### 7. Clean up and report
 
-Kill servers, `rm -rf "$dir"`. Report per PR: what changed, medium chosen and
-why, the beats shown, and the comment URL.
+Kill servers, `rm -rf "$dir"`. Report per PR (to the user, not on the PR):
+medium chosen and why, the beats shown, and the comment URL.
 
 ## Special surfaces
 
