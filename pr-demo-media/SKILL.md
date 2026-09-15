@@ -57,17 +57,34 @@ what's the shortest flow that shows it?* Write the 3–6 beats before any code.
 **Screenshot(s)** when the change is *how something looks*:
 - styling, layout, spacing, colors, dark mode, responsive tweaks
 - new static content: a page, section, empty state, copy change
-- best form: **before/after** — capture the same view on the base branch and
-  the PR branch, post both images labeled. A before/after pair is often the
-  single most persuasive review artifact.
+- **before/after only when the old state is the point** — a layout that got
+  denser, a card that was redesigned, spacing or colour a reviewer cannot
+  recall. Capture the same view on the base branch and the PR branch, post
+  both labeled. Skip the pair when the "before" is self-evident: an unticked
+  checkbox, a renamed button, an element that simply wasn't there. Two images
+  of an obvious difference read as padding, not evidence.
 
 **Video** when the change is *how something behaves*:
 - multi-step flows (login, wizard, checkout), navigation changes
 - anything animated, drag/drop, loading/async states, realtime updates
 - interactions where the intermediate states are the feature
 
-Mixed PRs: pick the primary story; one video **or** 1–3 screenshots, not a
-gallery. A 20–60s video or ≤3 images per comment.
+Mixed PRs: pick the primary story; one video **or** screenshots, never both.
+
+**How much media — scale it to the change, not to what you captured.**
+
+| The change | What to post |
+| --- | --- |
+| One simple surface: a setting, a copy change, an empty state, a restyled component | **one screenshot** |
+| A surface whose new states aren't obvious from a single frame, or a layout whose shape changed | 2–3 screenshots |
+| A flow: several steps, async states, animation | one 20–60 s video |
+
+Default to one image and add a second only when it answers a question the
+first cannot. Three is the ceiling for images, and reaching it should be rare.
+A reviewer scrolling past four near-identical frames learns less than one
+well-framed shot. Crop each image to the change — the card, the row, the
+panel — rather than posting the whole window, and keep it under roughly 1000
+pixels wide so the text stays legible once GitHub scales it.
 
 ### 3. Check out and launch
 
@@ -178,9 +195,9 @@ gh pr comment <N> -R <owner>/<repo> \
 ```
 
 Files the body doesn't reference are appended to the end of the comment, so
-for a single video the body is just the marker + heading. For a before/after
-pair, reference the files in the body so the labels sit next to the right
-image — `gh` rewrites each `![...](./file)` to the uploaded asset URL:
+for one video — or one screenshot, the usual case — the body is just the
+marker + heading, with no label at all. For a before/after pair, reference the
+files in the body so the labels sit next to the right image — `gh` rewrites each `![...](./file)` to the uploaded asset URL:
 
 ```bash
 gh pr comment <N> -R <owner>/<repo> \
