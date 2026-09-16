@@ -10,7 +10,7 @@ beside every skill in both places and `../../shared/<file>` always resolves.
 | --- | --- | --- |
 | `repo-targets.sh` | auto-reviewer, ci-runner, dependency-updater, pr-demo-media, pr-watcher | Sourced library: `resolve_repos` (REPOS / OWNERS / the current checkout), `$CUTOFF`, `ts_days_ago` |
 | `find-pr-candidates.sh` | auto-reviewer, pr-demo-media | The open-PR discovery sweep, parameterized by marker / path filter / whether reviews count |
-| `ec2-ssh-sweep.sh` | infra-audit, infra-cost-review, sec-ops | `discover` running EC2 instances, then `run` a read-only collector on each over SSH or SSM |
+| `ec2-ssh-sweep.sh` | infra-audit, infra-cost-audit, sec-ops-audit | `discover` running EC2 instances, then `run` a read-only collector on each over SSH or SSM |
 
 ## How skills reach it
 
