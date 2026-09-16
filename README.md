@@ -1,8 +1,9 @@
 # generic-coding-agents
 
-Six Claude Code skills. Four are standalone coding agents operating on
-the repo you are currently in (or the repos/orgs you name via `REPOS`/`OWNERS`); two review
-cloud infrastructure (cost, and reliability/security/fitness). All PR/repo discovery is done
+Nine Claude Code skills. Six operate on GitHub — four standalone coding agents plus a
+watcher that runs them and a skill that grows this repo — working on the repo you are
+currently in (or the repos/orgs you name via `REPOS`/`OWNERS`); three audit cloud
+infrastructure and operations (cost, reliability/security/fitness, sec-ops). All PR/repo discovery is done
 by deterministic bash scripts (`scripts/` in each skill); the model does the
 judgment work on top.
 
@@ -16,13 +17,14 @@ judgment work on top.
 | [sec-ops](sec-ops/SKILL.md) | Operational-security audit for 2–10 person startups — thirteen questions: **all code in the company repo**, **no ex-contractor/ex-engineer access anywhere**, **CEO has admin on everything and every account and every server is in the company's name** (live hosts and the API hosts the frontend calls are resolved to IP owner → provider → is that account in the inventory; residential IPs and tunnels flagged), plus no secrets in repo history, no shared logins, prod access by named person, domains company-owned, billing in the company's name, app-store/registry accounts company-owned, a company password manager, prod secrets in a store and rotated after departures, SPF/DKIM/DMARC working with no external forwards, per-identity 2FA (overlaps infra-audit on purpose). Needs wide access: API/CLI/MCP per system preferred (`scripts/saas-access-inventory.sh` covers ~20 vendors, guarded by whatever token/CLI is present), screenshots transcribed to JSON as the fallback. Q1 is the heavy one: `live-vs-repo.sh` fetches every live hostname's page and JS bundles, fingerprints the stack, pulls API hosts/paths/env names and greps them in the repo, lists every place code runs in AWS (Lambda, ECS, EventBridge schedules, Glue, Step Functions, …) and produces `CODE-RECONCILIATION.md` with MATCH/NO MATCH per host and unit plus structural gaps (backend with no frontend; pipelines with no source); `dependency-provenance.sh` flags low-volume npm/PyPI packages maintained by current or former employees (company code living in one person's registry account). Read-only `github-access-inventory.sh`, `repo-scan.sh` (history secret scan, committers, personal-repo deps, CI secret exposure), `domain-inventory.sh` (whois/DNS/DMARC/who-hosts-what), the same SSH sweep with a people-and-code collector (`on-box-secops.sh`: authorized_keys fingerprints, logins, AKIA ids, git repos on disk with uncommitted/unpushed counts, app dirs with no repo). `secops-digest.py` merges everything into a people × systems **access matrix** (former people first) and an ownership table. Scorecard report + filled-in removal-and-rotation runbook; removes nobody, rotates nothing; recommends no enterprise controls (SSO/MDM) | on demand / after every departure |
 | [pr-demo-media](pr-demo-media/SKILL.md) | Demos frontend PRs: records a Playwright video or captures before/after screenshots — whichever fits the change — and posts it on the PR with `gh pr comment --attach` | continuous loop, ~20–30 min |
 | [pr-watcher](pr-watcher/SKILL.md) | Runs any of the PR-reactive skills on the PRs that qualify — yours, opened in the last 7 days, by default: `/pr-watcher run /auto-reviewer /ci-runner`. Sweeps every qualifying open PR first, then handles each one the moment it changes: one `gh webhook forward` per repo (polling if the repo won't grant a webhook) feeds a queue; the agent drains it with a capped number of subagents, one per PR. The watcher itself writes nothing to GitHub | while the session runs |
+| [create-skill](create-skill/SKILL.md) | Adds a new skill to **this repo** from a child repo that vendors it: clones this repo fresh, writes the skill in the house style ([conventions](create-skill/references/skill-conventions.md)), wires the README, pushes a branch and opens the PR here — never edits the vendored copy. Reports the PR link and the one follow-up: once merged, run `npm run update` in the child repo | on demand |
 
 ## Install
 
 Symlink into the user skills directory so they're available in every session:
 
 ```bash
-for s in auto-reviewer ci-runner dependency-updater infra-cost-review infra-audit sec-ops pr-demo-media; do
+for s in auto-reviewer ci-runner dependency-updater infra-cost-review infra-audit sec-ops pr-demo-media pr-watcher create-skill; do
   ln -sfn "$PWD/$s" ~/.claude/skills/$s
 done
 ```
@@ -43,7 +45,8 @@ done
 - **Env tuning**: `REPOS`, `OWNERS`, `DAYS`, `MARKER` on every script.
 - Write surfaces: auto-reviewer and pr-demo-media post comments only;
   ci-runner posts statuses + one upserted comment; dependency-updater pushes
-  branches and opens PRs. Nothing merges, force-pushes, or deletes.
+  branches and opens PRs; create-skill pushes one branch and opens one PR on
+  this repo only. Nothing merges, force-pushes, or deletes.
 
 The three audit skills are different in kind: they never write to any provider or to any server —
 inventory is read-only, the on-box collectors only read (the sweep runner refuses to send a script
