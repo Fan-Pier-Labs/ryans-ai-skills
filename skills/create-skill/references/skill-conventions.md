@@ -7,7 +7,7 @@ indistinguishable in form from the existing ones — read two of them
 ## Layout
 
 ```
-<name>/
+skills/<name>/
   SKILL.md              # required — the whole skill, for the agent
   references/*.md       # optional — checklists, templates, recipes the SKILL.md links to
   scripts/*.sh|*.py     # only for deterministic discovery/inventory; read-only
@@ -92,7 +92,7 @@ infra-audit both do this).
 
 Three edits, every time:
 
-1. A row in the skills table: `| [<name>](<name>/SKILL.md) | what it does | cadence |`.
+1. A row in the skills table: `| [<name>](skills/<name>/SKILL.md) | what it does | cadence |`.
    Cadence is one of: `on demand`, `continuous loop, ~N min`, `while the
    session runs`, `on demand / weekly`, `every ~N min, or on PR events via pr-watcher`.
 2. The name appended to the `for s in …` install loop.

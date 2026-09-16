@@ -87,7 +87,7 @@ for each changed PR. One watcher serves every skill attached to it.
 design, so looping is the harness's job — `/loop 15m` in Claude Code, or cron:
 
 ```bash
-*/15 * * * * REPOS='owner/repo' /path/to/generic-coding-agents/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
+*/15 * * * * REPOS='owner/repo' /path/to/generic-coding-agents/skills/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
 ```
 
 Size the interval above the sweep's wall-clock time, or ticks overlap. With
