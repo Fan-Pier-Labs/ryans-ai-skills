@@ -29,6 +29,11 @@ for s in auto-reviewer ci-runner dependency-updater infra-cost-review infra-audi
 done
 ```
 
+Inside this repo itself no install is needed: `.claude/skills/` holds committed
+symlinks to every skill directory, so a session opened at the repo root sees them
+all. Repos that vendor this one link the skills they want into their own
+`.claude/skills/` (the nested copy is not read there).
+
 ## Conventions shared by the four GitHub agents
 
 - **Idempotency via markers**: every posted comment starts with an HTML marker
