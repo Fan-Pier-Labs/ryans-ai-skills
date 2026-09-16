@@ -115,6 +115,24 @@ newer than the last commit. Never review the same head SHA twice.
 
 4. **Clean up**: `rm -rf "$dir"` and kill anything you started.
 
+## Single-PR invocation
+
+When handed one PR — by `/pr-watcher`, or by a user naming a PR — do not run
+the loop. The contract:
+
+1. **Skip discovery.** `find-review-candidates.sh` is for sweeps.
+2. **Idempotency first.** A marker comment for this exact head means it is
+   already reviewed — stop and say so:
+
+   ```bash
+   gh api "repos/<repo>/issues/<N>/comments" --paginate      --jq '.[] | select(.body | contains("generic-coding-agents:auto-reviewer sha:<head_sha>")) | .id'
+   ```
+3. **Confirm the head.** `gh pr view <N> -R <repo> --json headRefOid,isDraft`.
+   Draft → skip. Head moved since you were handed the SHA → review the
+   *current* head and put its SHA in the marker; the stale SHA is nobody's
+   business now.
+4. Run **Reviewing one PR** as written. One comment, then clean up.
+
 ## Guardrails
 
 - **Comment only.** Never push commits, never merge, never close PRs, never

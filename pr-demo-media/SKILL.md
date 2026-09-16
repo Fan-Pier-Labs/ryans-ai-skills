@@ -50,6 +50,26 @@ scan their account.
 3. When looping continuously, schedule the next pass 20–30 min out (`/loop` or
    `ScheduleWakeup`); the marker makes passes idempotent per head SHA.
 
+## Single-PR invocation
+
+When handed one PR — by `/pr-watcher`, or by a user naming a PR — do not run
+the loop. The contract:
+
+1. **Skip discovery.** `find-demo-candidates.sh` is for sweeps.
+2. **Idempotency first.** A marker comment for this exact head means it is
+   already demoed — stop and say so:
+
+   ```bash
+   gh api "repos/<repo>/issues/<N>/comments" --paginate      --jq '.[] | select(.body | contains("generic-coding-agents:pr-demo-media sha:<head_sha>")) | .id'
+   ```
+3. **Confirm the head.** `gh pr view <N> -R <repo> --json headRefOid,isDraft,files`.
+   Draft → skip. Head moved → demo the *current* head and use its SHA.
+4. **Apply the scope rule yourself** — the discovery script's frontend
+   heuristic did not run, so the judgment is entirely yours: does anything a
+   user meets change? Backend, refactor, config, test churn → skip, post
+   nothing, say why in one line.
+5. Run **Demoing one PR** as written.
+
 ## Demoing one PR
 
 ### 1. Understand the change

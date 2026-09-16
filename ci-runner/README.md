@@ -60,21 +60,10 @@ page itself.
 
 ## Getting change events instead of polling
 
-`scripts/watch.sh` implements option 3 below, with option 1 as its fallback:
-it starts `webhook-receiver.py` on an ephemeral port, runs one
-`gh webhook forward` per repo against it, and supervises them. Creating the
-webhook needs repo admin, so **every failure in the event path degrades to
-interval polling with a logged `WARNING`** rather than exiting — extension
-not installable, no admin rights, or forwarders dying later. A slow fallback
-sweep runs even when events are healthy, since the forwarder has no delivery
-guarantee.
-
-Deliveries map to work like this: a `pull_request` event
-(`opened`/`synchronize`/`reopened`/`ready_for_review`, non-draft) carries the
-number and head SHA directly; a `push` event carries only a SHA, so the
-receiver asks `repos/<r>/commits/<sha>/pulls` which open PRs it heads. The
-receiver refuses to run the same PR twice concurrently and caps itself at
-`JOBS` workers.
+The shared `pr-watcher` skill implements option 3 below, with option 1 as
+its fallback, and calls `--run-one` per changed PR. It lives in its own skill
+rather than here because one watcher serves every PR-reactive skill from one
+webhook; see [../pr-watcher/SKILL.md](../pr-watcher/SKILL.md).
 
 Three options, in increasing order of immediacy:
 
@@ -85,7 +74,7 @@ Three options, in increasing order of immediacy:
    (304s don't count against the rate limit) and advertises the allowed
    cadence in `X-Poll-Interval`. Good for tightening latency to ~1 minute
    without webhooks.
-3. **Real push events: `gh webhook forward`** (what `watch.sh` uses) — the official gh extension
+3. **Real push events: `gh webhook forward`** (what `pr-watcher` uses) — the official gh extension
    (`gh extension install cli/gh-webhook`) creates a temporary webhook and
    streams deliveries to a local URL over a websocket, no public endpoint
    needed:
