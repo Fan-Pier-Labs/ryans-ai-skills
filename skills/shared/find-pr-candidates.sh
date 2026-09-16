@@ -1,47 +1,60 @@
 #!/usr/bin/env bash
-# find-pr-candidates.sh — the one PR-discovery sweep, shared by every skill that
-# acts on open pull requests (auto-reviewer, pr-demo-media, …). Read-only: it
-# never writes anything to GitHub, so it is safe to run at any time.
+# find-pr-candidates.sh — the open-PR discovery sweep, shared by every skill that
+# acts on pull requests. Read-only: it never writes anything to GitHub, so it is
+# safe to run at any time.
+#
+#   find-pr-candidates.sh [--touching <regex>] [--reviews-are-feedback] <marker>...
+#
+#     <marker>                 a comment containing this text means the PR's
+#                              current head was already handled — skip it.
+#                              Pass more than one if older versions of the skill
+#                              used a different marker.
+#     --touching <regex>       only PRs that change a matching file; the matches
+#                              are emitted as `matched_files`
+#     --reviews-are-feedback   a human review also counts as handled, so the
+#                              skill doesn't pile on after a person has replied
 #
 # Emits one JSON object per line for every open, non-draft PR in the target
-# repos that:
-#   - has had commits within the last $DAYS days, and
-#   - matches $PATH_FILTER, if one is set, and
-#   - has no feedback newer than its latest commit — a comment carrying $MARKER
-#     (or $EXTRA_MARKER), plus human reviews when $COUNT_REVIEWS=1.
+# repos with commits in the last $DAYS days that no marker (and no review, with
+# the flag) is newer than:
 #
-#   {repo, number, title, url, head_sha, last_commit[, <MATCH_FIELD>: [...]]}
+#   {repo, number, title, url, head_sha, last_commit[, matched_files: [...]]}
 #
-# Skills wrap this with their own defaults rather than calling it directly; see
-# skills/auto-reviewer/scripts/find-review-candidates.sh for the pattern.
+# Skills call this through a wrapper holding their own arguments — see
+# skills/auto-reviewer/scripts/find-review-candidates.sh.
 #
-# Env:
-#   REPOS / OWNERS   target repos (default: the current repo, see repo-targets.sh)
-#   DAYS             only PRs with commits this recent (default 7)
-#   MARKER           required — the comment marker meaning "already handled"
-#   EXTRA_MARKER     optional second substring that also counts as handled
-#   COUNT_REVIEWS    1 = a human review also counts as feedback (default 0)
-#   PATH_FILTER      optional jq regex; the PR must touch a file matching it
-#   MATCH_FIELD      name of the emitted matched-path array (default matched_files)
+# Env: REPOS / OWNERS (default: the current repo, see repo-targets.sh), DAYS.
 set -uo pipefail
 
 DAYS="${DAYS:-7}"
-MARKER="${MARKER:-}"
-EXTRA_MARKER="${EXTRA_MARKER:-}"
-COUNT_REVIEWS="${COUNT_REVIEWS:-0}"
-PATH_FILTER="${PATH_FILTER:-}"
-MATCH_FIELD="${MATCH_FIELD:-matched_files}"
+TOUCHING=""
+REVIEWS_ARE_FEEDBACK=0
+MARKERS=()
 
-if [[ -z "$MARKER" ]]; then
-  echo "ERROR: MARKER is required — without it every PR looks unhandled and would be acted on twice." >&2
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --touching)             TOUCHING="$2"; shift 2;;
+    --reviews-are-feedback) REVIEWS_ARE_FEEDBACK=1; shift;;
+    -h|--help)              sed -n '2,25p' "$0"; exit 0;;
+    -*)                     echo "unknown option: $1" >&2; exit 2;;
+    *)                      MARKERS+=("$1"); shift;;
+  esac
+done
+
+if [[ ${#MARKERS[@]} -eq 0 ]]; then
+  echo "ERROR: give at least one marker — without it every PR looks unhandled and would be acted on twice." >&2
+  echo "       usage: find-pr-candidates.sh [--touching <regex>] [--reviews-are-feedback] <marker>..." >&2
   exit 2
 fi
 
 SHARED=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$SHARED/repo-targets.sh"
 
+# One jq filter that picks out every comment carrying any of the markers.
+markers_json=$(printf '%s\n' "${MARKERS[@]}" | jq -R . | jq -sc .)
+
 fields=number,title,url,headRefOid,commits
-[[ -n "$PATH_FILTER" ]] && fields="$fields,files"
+[[ -n "$TOUCHING" ]] && fields="$fields,files"
 
 repos=$(resolve_repos) || exit $?
 
@@ -57,17 +70,17 @@ for repo in $repos; do
     if [[ "$last_commit" < "$CUTOFF" ]]; then continue; fi
 
     matched="[]"
-    if [[ -n "$PATH_FILTER" ]]; then
-      matched=$(jq -c --arg re "$PATH_FILTER" '[.files[].path | select(test($re))]' <<<"$info")
+    if [[ -n "$TOUCHING" ]]; then
+      matched=$(jq -c --arg re "$TOUCHING" '[.files[].path | select(test($re))]' <<<"$info")
       [[ "$matched" == "[]" ]] && continue
     fi
 
     last_marker=$(gh api "repos/$repo/issues/$n/comments" --paginate 2>/dev/null \
-                    | jq -r --arg m "$MARKER" --arg m2 "$EXTRA_MARKER" \
-                        '.[] | select((.body | contains($m)) or ($m2 != "" and (.body | contains($m2)))) | .created_at' \
+                    | jq -r --argjson markers "$markers_json" \
+                        '.[] | select([.body | contains($markers[])] | any) | .created_at' \
                     | sort | tail -1)
     last_review=""
-    if [[ "$COUNT_REVIEWS" = 1 ]]; then
+    if [[ "$REVIEWS_ARE_FEEDBACK" = 1 ]]; then
       last_review=$(gh api "repos/$repo/pulls/$n/reviews" --paginate \
                       --jq '.[].submitted_at // empty' 2>/dev/null | sort | tail -1)
     fi
@@ -78,10 +91,9 @@ for repo in $repos; do
     fi
 
     jq -c --arg repo "$repo" --arg last_commit "$last_commit" \
-          --arg field "$MATCH_FIELD" --argjson matched "$matched" \
-          --arg filtered "${PATH_FILTER:+1}" \
+          --argjson matched "$matched" --arg touching "${TOUCHING:+1}" \
       '{repo: $repo, number: .number, title: .title, url: .url,
         head_sha: .headRefOid, last_commit: $last_commit}
-       + (if $filtered == "" then {} else {($field): $matched} end)' <<<"$info"
+       + (if $touching == "" then {} else {matched_files: $matched} end)' <<<"$info"
   done
 done

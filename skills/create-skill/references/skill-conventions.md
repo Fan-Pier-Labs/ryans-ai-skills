@@ -79,7 +79,9 @@ infra-audit both do this).
   never by copying the file. `resolve_repos` and the "which repos"
   paragraph above come from `shared/repo-targets.sh`; a skill that sweeps
   open PRs wraps `shared/find-pr-candidates.sh` instead of writing its own
-  loop. Read `skills/shared/README.md` before adding a script.
+  loop. A shared script takes **arguments**, not a set of env vars the
+  caller exports — a flag the call site spells out beats a knob defined
+  elsewhere. Read `skills/shared/README.md` before adding a script.
 - **Env**: `REPOS`, `OWNERS`, `DAYS`, `MARKER` on every discovery script;
   `STATE_DIR` under `~/.cache/generic-coding-agents/<name>` if the skill
   keeps state.

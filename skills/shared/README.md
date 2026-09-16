@@ -9,7 +9,7 @@ beside every skill in both places and `../../shared/<file>` always resolves.
 | File | Used by | What it is |
 | --- | --- | --- |
 | `repo-targets.sh` | auto-reviewer, ci-runner, dependency-updater, pr-demo-media, pr-watcher | Sourced library: `resolve_repos` (REPOS / OWNERS / the current checkout), `$CUTOFF`, `ts_days_ago` |
-| `find-pr-candidates.sh` | auto-reviewer, pr-demo-media | The open-PR discovery sweep, parameterized by marker / path filter / whether reviews count |
+| `find-pr-candidates.sh` | auto-reviewer, pr-demo-media | The open-PR discovery sweep: `find-pr-candidates.sh [--touching <regex>] [--reviews-are-feedback] <marker>...` |
 | `ec2-ssh-sweep.sh` | infra-audit, infra-cost-audit, sec-ops-audit | `discover` running EC2 instances, then `run` a read-only collector on each over SSH or SSM |
 
 ## How skills reach it
@@ -34,10 +34,19 @@ fi
 . "$SHARED/repo-targets.sh"
 ```
 
-A shared script that needs per-skill defaults gets a **wrapper** at the path the
-SKILL.md documents, holding nothing but those defaults and an `exec` — see
-`skills/auto-reviewer/scripts/find-review-candidates.sh` (12 lines) and
-`skills/pr-demo-media/scripts/find-demo-candidates.sh`.
+A shared script a skill calls with its own arguments gets a **wrapper** at the
+path that skill's SKILL.md documents, holding nothing but those arguments and an
+`exec`, so the call site reads as a sentence:
+
+```bash
+exec "$SHARED/find-pr-candidates.sh" --reviews-are-feedback \
+  "${MARKER:-generic-coding-agents:auto-reviewer}"
+```
+
+Arguments, not env vars: `--reviews-are-feedback` says what it does where you
+read it. An exported knob three lines above the `exec` does not, and a reader
+then has to go find the shared script to learn what the skill actually asked
+for.
 
 ## Rules
 

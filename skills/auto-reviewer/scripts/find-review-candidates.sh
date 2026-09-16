@@ -6,8 +6,8 @@
 #   - has had commits within the last $DAYS days, and
 #   - has no review and no auto-reviewer marker comment newer than its latest commit.
 #
-# A thin wrapper over ../../shared/find-pr-candidates.sh, which does the sweep
-# for every PR skill; this file holds only what is specific to auto-reviewer.
+# The sweep itself is ../../shared/find-pr-candidates.sh, shared with the other
+# PR skills; this file is just auto-reviewer's arguments to it.
 #
 # Env: REPOS / OWNERS (default: the current repo, see shared/repo-targets.sh),
 # DAYS (default 7), MARKER.
@@ -21,7 +21,6 @@ if [[ -z "$SHARED" || ! -x "$SHARED/find-pr-candidates.sh" ]]; then
 fi
 
 export DAYS="${DAYS:-7}"
-export MARKER="${MARKER:-generic-coding-agents:auto-reviewer}"
-export COUNT_REVIEWS=1          # a human review is feedback too; don't pile on
 
-exec "$SHARED/find-pr-candidates.sh"
+exec "$SHARED/find-pr-candidates.sh" --reviews-are-feedback \
+  "${MARKER:-generic-coding-agents:auto-reviewer}"

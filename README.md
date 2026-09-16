@@ -57,9 +57,10 @@ brings `shared/` with them.
   a skill (no `SKILL.md`); it holds what several skills need — `repo-targets.sh`
   (the `resolve_repos` / `$CUTOFF` library behind the paragraph above),
   `find-pr-candidates.sh` (the open-PR sweep auto-reviewer and pr-demo-media
-  both run, parameterized by marker and path filter), and `ec2-ssh-sweep.sh`.
-  Skills reach it by a relative symlink, by sourcing it, or through a wrapper
-  that holds only the skill's own defaults. It ships next to the skills, so
+  both run, given a marker and optionally `--touching <regex>` /
+  `--reviews-are-feedback`), and `ec2-ssh-sweep.sh`. Skills reach it by a
+  relative symlink, by sourcing it, or through a wrapper that holds only the
+  arguments that skill passes. It ships next to the skills, so
   `../../shared/<file>` resolves in a vendored copy too.
 - Write surfaces: auto-reviewer and pr-demo-media post comments only;
   ci-runner posts statuses + one upserted comment; dependency-updater pushes
