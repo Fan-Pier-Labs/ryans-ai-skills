@@ -262,7 +262,7 @@ discover() {
   local repo
   for repo in $(resolve_repos); do
     if [[ -n "${ONLY:-}" && "$repo" != *"$ONLY"* ]]; then continue; fi
-    gh pr list -R "$repo" --state open --json number,isDraft,headRefOid \
+    gh pr list -R "$repo" --state open --limit 500 --json number,isDraft,headRefOid \
       --jq ".[] | select(.isDraft | not) | [\"$repo\", (.number|tostring), .headRefOid] | @tsv" 2>/dev/null
   done
 }

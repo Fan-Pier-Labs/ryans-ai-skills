@@ -11,10 +11,10 @@ one script does everything, and once started it needs no model judgment:
 
 ```bash
 scripts/ci-runner.sh          # one full sweep over the target repos (default: the current repo)
-scripts/watch.sh              # stay running: CI on GitHub events, polling if events are unavailable
 ```
 
-`ci-runner.sh` is one sweep and exits; `watch.sh` is the long-running front end.
+`ci-runner.sh` is one sweep and exits. To run CI the moment a PR changes,
+use `/pr-watcher run /ci-runner` — the shared watcher — rather than a loop.
 Discovery and execution are separate modes, so any trigger can drive the same
 executor:
 
@@ -23,7 +23,7 @@ executor:
 | `ci-runner.sh` (default) | discover, run up to `$JOBS` PRs **in parallel**, print the summary |
 | `ci-runner.sh --discover` | print work items as `repo<TAB>pr<TAB>sha` |
 | `ci-runner.sh --repos` | print the resolved target repos |
-| `ci-runner.sh --run-one REPO PR SHA` | run exactly one PR (what the fan-out and the webhook receiver call) |
+| `ci-runner.sh --run-one REPO PR SHA` | run exactly one PR (what the fan-out and `/pr-watcher` call) |
 
 What one sweep does, per open non-draft PR whose head SHA has no `local-ci`
 commit status yet (up to `JOBS` of these at a time, default 4):
@@ -63,26 +63,25 @@ scan their account.
 The cron form below runs outside any checkout, so give it `REPOS` or `OWNERS`
 explicitly.
 
-## Running it continuously
+## Single-PR invocation
 
-**Preferred: `scripts/watch.sh`.** It stays running and reacts to GitHub
-events instead of polling for them — `gh webhook forward` (the official
-`cli/gh-webhook` extension) creates a temporary webhook and streams
-deliveries over a websocket, so no public endpoint is needed;
-`webhook-receiver.py` turns each `push` / `pull_request` delivery into a
-`--run-one` call.
+When handed one PR — by `/pr-watcher`, or by a user naming a PR — the whole
+contract is one deterministic command, no subagent needed:
 
 ```bash
-REPOS='owner/repo' scripts/watch.sh
+scripts/ci-runner.sh --run-one <repo> <N> <head_sha>
 ```
 
-Creating that webhook **needs admin on the repo**. If any part of the event
-path fails — extension not installable, no admin rights, forwarder dies later
-— `watch.sh` logs a `WARNING` and degrades to interval polling, which needs no
-special permission. It never exits just because events are unavailable. Even
-in event mode a slow fallback sweep keeps running, because `gh webhook
-forward` is a development tool with no delivery guarantee; the commit-status
-ledger makes the overlap harmless.
+It is idempotent via the `local-ci` commit status on that SHA: already run →
+exits silently; `pending` from a crashed run → re-runs. The status on the PR
+is the result; with no parent sweep there is no summary table.
+
+## Running it continuously
+
+**Preferred: `/pr-watcher run /ci-runner`.** The shared watcher (see
+[../pr-watcher/SKILL.md](../pr-watcher/SKILL.md)) reacts to GitHub webhook
+deliveries — polling if the repo won't grant a webhook — and calls `--run-one`
+for each changed PR. One watcher serves every skill attached to it.
 
 **Alternative: sweep on an interval.** `ci-runner.sh` is single-sweep by
 design, so looping is the harness's job — `/loop 15m` in Claude Code, or cron:
@@ -126,7 +125,5 @@ users/orgs; neither set → the current repo), `DAYS` (repo-activity window when
 expanding `OWNERS`, default 30), `ONLY` (substring filter on the repo slug),
 `JOBS` (PRs run concurrently, default 4), `STATUS_CONTEXT` (default
 `local-ci`), `FORCE=1` to re-run heads that already have a status,
-`KEEP_WORK=1` to keep work directories for debugging. `watch.sh` adds
-`POLL_INTERVAL` (polling-mode gap, default 900s) and `FALLBACK_SWEEP`
-(event-mode safety-net gap, default 3600s). Secrets a workflow needs (e.g.
+`KEEP_WORK=1` to keep work directories for debugging. Secrets a workflow needs (e.g.
 `SOME_API_TEST_CREDS`) can be exported in the sweep's environment.
