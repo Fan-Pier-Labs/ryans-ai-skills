@@ -10,7 +10,7 @@ the model does the judgment work on top.
 
 | Skill | What it does | Cadence |
 | --- | --- | --- |
-| [auto-reviewer](skills/auto-reviewer/SKILL.md) | Posts a thermo-nuclear code-quality review on any open, non-draft PR (active in the last week) with no feedback since its latest commit | continuous loop, ~20–30 min |
+| [auto-reviewer](skills/auto-reviewer/SKILL.md) | Posts a thermo-nuclear code-quality review on any open, non-draft PR (active in the last week) with no feedback since its latest commit. Each review carries 🔴/🟡/🟢 status circles, a 1–5 risk score (blast radius if the PR is wrong), and — for repos with a `visions/<owner>/<repo>.md` on file — a check of whether the PR moves the product toward its stated 6-month/1-year direction. Each pass also runs `git merge-tree` across every open PR pair in the touched repos and posts a conflict note on both sides. A 🔴 finding that reaches `main` because its PR merged unaddressed becomes a GitHub issue assigned to the PR's author | continuous loop, ~20–30 min |
 | [ci-runner](skills/ci-runner/SKILL.md) | Runs each PR's own `.github/workflows` YAML locally (GitHub Actions credits are out), several PRs at a time, and posts commit statuses + failure logs. Fully deterministic and stateless — the `local-ci` status on the head SHA is the dedup ledger; `scripts/ci-runner.sh` is cron-able on its own. Design notes + all-local alternative in [ci-runner/README.md](skills/ci-runner/README.md) | every ~15 min, or on PR events via pr-watcher |
 | [dependency-updater](skills/dependency-updater/SKILL.md) | Bumps deps in every repo active in the last month, verifies by launching the app and running all tests, opens one PR per repo | on demand / weekly |
 | [infra-cost-review](skills/infra-cost-review/SKILL.md) | Finds where a cloud account's money goes and what can safely be cut: waste, wrong-sized resources, billing-model traps (stopped Lightsail instances billing full price, idle public IPv4). Read-only `scripts/aws-cost-inventory.sh` does the AWS sweep; `scripts/ec2-ssh-sweep.sh` asks for SSH/SSM access to every running EC2 box and runs a read-only collector (memory, I/O, real traffic, logins, deploys) so nothing is called "idle" from CPU alone. Tiered A/B/C report with exact commands; non-cost findings are handed to infra-audit | on demand |
@@ -62,7 +62,7 @@ brings `shared/` with them.
   relative symlink, by sourcing it, or through a wrapper that holds only the
   arguments that skill passes. It ships next to the skills, so
   `../../shared/<file>` resolves in a vendored copy too.
-- Write surfaces: auto-reviewer and pr-demo-media post comments only;
+- Write surfaces: pr-demo-media posts comments only; auto-reviewer posts comments and, for a blocking finding that merged unaddressed, one issue per PR;
   ci-runner posts statuses + one upserted comment; dependency-updater pushes
   branches and opens PRs; create-skill pushes one branch and opens one PR on
   this repo only. Nothing merges, force-pushes, or deletes.
