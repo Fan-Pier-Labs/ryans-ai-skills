@@ -7,25 +7,46 @@
 #   last resort) -> post commit status (context: local-ci) -> comment log tail
 #   on failure.
 #
+# Three modes, so that discovery and execution are separable:
+#   (default)                  one full sweep: discover, then run up to $JOBS PRs
+#                              in parallel, then print the summary table
+#   --discover                 print eligible work items as "repo<TAB>pr<TAB>sha"
+#   --repos                    print the resolved target repos, one per line
+#   --run-one REPO PR SHA      run exactly one PR (used by the sweep's fan-out
+#                              and by the event-driven front end, watch.sh)
+#
 # Stateless: the local-ci commit status on the head SHA is the "already ran"
 # ledger — no local state files. A `pending` status alone (crashed run) does
 # not count as ran. See README.md for event-driven and all-local alternatives.
 #
 # Env: REPOS / OWNERS (default: the current repo, see resolve_repos), DAYS (repo
 # activity window when expanding OWNERS, default 30), ONLY (substring filter on
-# repo slug), STATUS_CONTEXT, KEEP_WORK.
+# repo slug), JOBS (parallel PRs per sweep, default 4), STATUS_CONTEXT, KEEP_WORK.
 set -uo pipefail
 
 DAYS="${DAYS:-30}"
 STATUS_CONTEXT="${STATUS_CONTEXT:-local-ci}"
 MARKER="<!-- generic-coding-agents:ci-runner -->"
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 CACHE_DIR="${CACHE_DIR:-$HOME/.cache/generic-coding-agents/ci-runner}"   # tooling only (venv), not run state
-WORK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/ci-runner.XXXXXX")
-SUMMARY=()
 
-mkdir -p "$CACHE_DIR"
-trap '[[ "${KEEP_WORK:-0}" = 1 ]] || rm -rf "$WORK_ROOT"' EXIT
+# How many PRs a sweep runs at once. Deliberately not ncpu: each job is a full
+# install+build+test, so the ceiling is RAM and disk I/O, not cores. Jobs also
+# share the host's package-manager caches and any fixed ports a workflow binds.
+JOBS="${JOBS:-4}"
+
+# The work root is shared with --run-one children so their summary lines land in
+# one place. Only the process that created it may delete it.
+if [[ -n "${CI_RUNNER_WORK_ROOT:-}" ]]; then
+  WORK_ROOT="$CI_RUNNER_WORK_ROOT"
+  OWNS_WORK_ROOT=0
+else
+  WORK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/ci-runner.XXXXXX")
+  OWNS_WORK_ROOT=1
+fi
+mkdir -p "$CACHE_DIR" "$WORK_ROOT/summary"
+trap '[[ "$OWNS_WORK_ROOT" = 1 && "${KEEP_WORK:-0}" != 1 ]] && rm -rf "$WORK_ROOT"' EXIT
 
 if date -u -v-1d +%s >/dev/null 2>&1; then
   CUTOFF=$(date -u -v-"${DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
@@ -65,6 +86,8 @@ resolve_repos() {
 }
 
 # Bootstrap a venv with PyYAML for the workflow interpreter (one-time).
+# Called once by the parent before any fan-out: N jobs racing to create the
+# same venv would corrupt it.
 ensure_python() {
   local py="$CACHE_DIR/venv/bin/python"
   [[ -x "$py" ]] && "$py" -c 'import yaml' 2>/dev/null && return 0
@@ -170,6 +193,12 @@ upsert_comment() { # repo pr body
   fi
 }
 
+# Summary lines are files, not a shell array: --run-one children are separate
+# processes, so an array append in the parent would be lost.
+record() { # line
+  printf '%s\n' "$1" >"$WORK_ROOT/summary/$(date +%s)-$$-$RANDOM"
+}
+
 # --- per-PR run ---------------------------------------------------------------
 
 run_pr() { # repo pr_number head_sha
@@ -200,7 +229,7 @@ run_pr() { # repo pr_number head_sha
 
   if [[ $rc -eq 42 ]]; then
     post_status "$repo" "$sha" success "local CI: no workflows or recognizable stack, skipped"
-    SUMMARY+=("$repo#$n  ${sha:0:7}  NO_STACK  ${elapsed}s")
+    record "$repo#$n  ${sha:0:7}  NO_STACK  ${elapsed}s"
   elif [[ $rc -eq 0 ]]; then
     post_status "$repo" "$sha" success "local CI passed in ${elapsed}s"
     # If a failure comment exists from an earlier commit, flip it to green.
@@ -209,7 +238,7 @@ run_pr() { # repo pr_number head_sha
       upsert_comment "$repo" "$n" "$MARKER
 ✅ **Local CI passed** at \`${sha:0:7}\` (${elapsed}s). Earlier failure resolved."
     fi
-    SUMMARY+=("$repo#$n  ${sha:0:7}  PASS  ${elapsed}s")
+    record "$repo#$n  ${sha:0:7}  PASS  ${elapsed}s"
   else
     post_status "$repo" "$sha" failure "local CI failed in ${elapsed}s"
     upsert_comment "$repo" "$n" "$MARKER
@@ -218,28 +247,63 @@ run_pr() { # repo pr_number head_sha
 \`\`\`
 $(tail -c 6000 "$logf" | tail -n 80 | LC_ALL=C sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
 \`\`\`"
-    SUMMARY+=("$repo#$n  ${sha:0:7}  FAIL  ${elapsed}s")
+    record "$repo#$n  ${sha:0:7}  FAIL  ${elapsed}s"
   fi
   [[ "${KEEP_WORK:-0}" = 1 ]] || rm -rf "$dir"
 }
 
-# --- sweep --------------------------------------------------------------------
+# --- discovery ----------------------------------------------------------------
 
-repos=$(resolve_repos) || exit $?
+# Every open non-draft PR in the target repos, as "repo<TAB>pr<TAB>sha".
+# Deliberately does NOT filter on already_ran: that check is one API call per
+# PR, and doing it inside each --run-one child parallelises it along with the
+# work. Children exit silently (no summary line) when a head has already run.
+discover() {
+  local repo
+  for repo in $(resolve_repos); do
+    if [[ -n "${ONLY:-}" && "$repo" != *"$ONLY"* ]]; then continue; fi
+    gh pr list -R "$repo" --state open --json number,isDraft,headRefOid \
+      --jq ".[] | select(.isDraft | not) | [\"$repo\", (.number|tostring), .headRefOid] | @tsv" 2>/dev/null
+  done
+}
 
-for repo in $repos; do
-  if [[ -n "${ONLY:-}" && "$repo" != *"$ONLY"* ]]; then continue; fi
-  while IFS=$'\t' read -r n sha; do
-    [[ -z "${n:-}" ]] && continue
-    run_pr "$repo" "$n" "$sha"
-  done < <(gh pr list -R "$repo" --state open --json number,isDraft,headRefOid \
-             --jq '.[] | select(.isDraft | not) | [.number, .headRefOid] | @tsv' 2>/dev/null)
-done
+print_summary() {
+  echo
+  echo "=== ci-runner sweep summary ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ==="
+  if ! ls "$WORK_ROOT/summary"/* >/dev/null 2>&1; then
+    echo "nothing to run — every open PR head already has a $STATUS_CONTEXT status"
+  else
+    cat "$WORK_ROOT/summary"/* | sort
+  fi
+}
 
-echo
-echo "=== ci-runner sweep summary ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ==="
-if [[ ${#SUMMARY[@]} -eq 0 ]]; then
-  echo "nothing to run — every open PR head already has a $STATUS_CONTEXT status"
-else
-  printf '%s\n' "${SUMMARY[@]}"
-fi
+# --- entry points -------------------------------------------------------------
+
+case "${1:-}" in
+  --discover)
+    discover
+    ;;
+  --repos)
+    resolve_repos
+    ;;
+  --run-one)
+    shift
+    [[ $# -eq 3 ]] || { echo "usage: $0 --run-one REPO PR SHA" >&2; exit 2; }
+    run_pr "$1" "$2" "$3"
+    ;;
+  ""|--sweep)
+    ensure_python || log "WARN: could not bootstrap the python venv; jobs will use stack heuristics"
+    work=$(discover)
+    if [[ -n "$work" ]]; then
+      # Fan out over --run-one children. Tokens are newline-separated so xargs
+      # -n3 groups them; repo/pr/sha never contain whitespace.
+      export CI_RUNNER_WORK_ROOT="$WORK_ROOT" STATUS_CONTEXT KEEP_WORK="${KEEP_WORK:-0}" FORCE="${FORCE:-0}" CACHE_DIR
+      printf '%s\n' "$work" | tr '\t' '\n' | xargs -P "$JOBS" -n 3 "$SELF" --run-one
+    fi
+    print_summary
+    ;;
+  *)
+    echo "usage: $0 [--sweep | --discover | --repos | --run-one REPO PR SHA]" >&2
+    exit 2
+    ;;
+esac

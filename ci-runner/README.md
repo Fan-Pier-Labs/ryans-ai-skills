@@ -21,6 +21,33 @@
    all: lockfile-aware npm/bun/pnpm/yarn running whichever of
    lint/typecheck/build/test scripts exist; pytest; cargo; go.
 
+## Parallelism: discovery and execution are separate
+
+The sweep is a fan-out, not a loop. `--discover` emits `repo<TAB>pr<TAB>sha`
+work items; `--run-one REPO PR SHA` executes exactly one; the default mode
+pipes the first into `xargs -P $JOBS` over the second. Every other trigger
+(webhook receiver, a future mirror differ) is just another producer feeding
+`--run-one`.
+
+Three things this design had to get right:
+
+- **Summary lines are files, not a shell array.** `--run-one` children are
+  separate processes, so an array append in the parent would be lost. Each
+  job writes a line under `$WORK_ROOT/summary/`; the parent collates.
+- **The work root is shared and singly-owned.** The parent mktemps it and
+  exports `CI_RUNNER_WORK_ROOT`; children reuse it and, crucially, do not
+  delete it on exit — only the creator's trap cleans up.
+- **The PyYAML venv is bootstrapped once, before the fan-out.** N jobs racing
+  to create the same venv corrupts it.
+
+`JOBS` defaults to 4, deliberately not ncpu: each job is a full
+install + build + test, so the ceiling is RAM and disk I/O. Two limits no
+amount of plumbing removes — jobs share the host's package-manager caches
+(npm's cacache is lock-protected; pnpm/yarn/cargo have raced historically),
+and workflows binding a **fixed port** collide with each other. Failures that
+only appear under load and pass on a solo re-run are the symptom; lower
+`JOBS`.
+
 ## State lives on GitHub, not locally
 
 There are no local state files. The **`local-ci` commit status on the head
@@ -33,16 +60,32 @@ page itself.
 
 ## Getting change events instead of polling
 
+`scripts/watch.sh` implements option 3 below, with option 1 as its fallback:
+it starts `webhook-receiver.py` on an ephemeral port, runs one
+`gh webhook forward` per repo against it, and supervises them. Creating the
+webhook needs repo admin, so **every failure in the event path degrades to
+interval polling with a logged `WARNING`** rather than exiting — extension
+not installable, no admin rights, or forwarders dying later. A slow fallback
+sweep runs even when events are healthy, since the forwarder has no delivery
+guarantee.
+
+Deliveries map to work like this: a `pull_request` event
+(`opened`/`synchronize`/`reopened`/`ready_for_review`, non-draft) carries the
+number and head SHA directly; a `push` event carries only a SHA, so the
+receiver asks `repos/<r>/commits/<sha>/pulls` which open PRs it heads. The
+receiver refuses to run the same PR twice concurrently and caps itself at
+`JOBS` workers.
+
 Three options, in increasing order of immediacy:
 
-1. **Sweep on an interval** (current default) — cron or `/loop 10m`. Simple,
+1. **Sweep on an interval** (the fallback) — cron or `/loop 15m`. Simple,
    stateless, ~1 API call per repo per sweep plus one per open PR head.
 2. **Conditional polling of the Events API** — `gh api repos/<r>/events` with
    the `If-None-Match` ETag header. GitHub returns `304 Not Modified` for free
    (304s don't count against the rate limit) and advertises the allowed
    cadence in `X-Poll-Interval`. Good for tightening latency to ~1 minute
    without webhooks.
-3. **Real push events: `gh webhook forward`** — the official gh extension
+3. **Real push events: `gh webhook forward`** (what `watch.sh` uses) — the official gh extension
    (`gh extension install cli/gh-webhook`) creates a temporary webhook and
    streams deliveries to a local URL over a websocket, no public endpoint
    needed:
