@@ -32,9 +32,11 @@ scan their account.
 1. `scripts/find-demo-candidates.sh` — emits one JSON line per open, non-draft
    PR (with commits in the last 7 days) that touches frontend files and has no
    demo-marker comment newer than its last commit. Each line carries
-   `frontend_files` — the script's extension/path heuristic. You make the
-   final call: skip PRs where the "frontend" files are config, test, or
-   generated churn, and skip backend PRs that slipped through. Genuinely
+   `matched_files` — the script's extension/path heuristic. (It is a wrapper
+   that calls `skills/shared/find-pr-candidates.sh`, the sweep every PR skill
+   runs, with this skill's frontend filter and markers — call the wrapper, not
+   the shared script.) You make the final call: skip PRs where the "frontend" files are config,
+   test, or generated churn, and skip backend PRs that slipped through. Genuinely
    nothing showable → say so in the pass summary, post nothing.
 
    **Only user-visible change is in scope.** The question for every PR is

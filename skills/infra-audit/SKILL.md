@@ -195,5 +195,5 @@ re-run, not a rediscovery.
 - `references/report-template.md` — scorecard report skeleton and per-question contract. Read during §6.
 - `scripts/aws-audit-inventory.sh` — read-only AWS inventory → JSON + `DIGEST.md` (with the CloudTrail verdict); run during §2. `--help` for flags.
 - `scripts/audit-digest.py` — builds the digest from the JSON; re-run alone if you edit the rules.
-- `scripts/ec2-ssh-sweep.sh` — `discover` running instances, then `run` the collector on each over SSH or SSM; §3.
+- `scripts/ec2-ssh-sweep.sh` — `discover` running instances, then `run` the collector on each over SSH or SSM; §3. A symlink to `skills/shared/ec2-ssh-sweep.sh`, shared with infra-cost-audit and sec-ops-audit.
 - `scripts/on-box-audit.sh` — the read-only collector; secret values are never printed.

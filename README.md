@@ -4,8 +4,9 @@ Nine Claude Code skills. Six operate on GitHub — four standalone coding agents
 watcher that runs them and a skill that grows this repo — working on the repo you are
 currently in (or the repos/orgs you name via `REPOS`/`OWNERS`); three audit cloud
 infrastructure and operations (cost, reliability/security/fitness, sec-ops). All PR/repo discovery is done
-by deterministic bash scripts (`scripts/` in each skill); the model does the
-judgment work on top.
+by deterministic bash scripts (`scripts/` in each skill, or
+[`skills/shared/`](skills/shared/README.md) where several skills run the same one);
+the model does the judgment work on top.
 
 | Skill | What it does | Cadence |
 | --- | --- | --- |
@@ -23,6 +24,8 @@ judgment work on top.
 
 Every skill lives under `skills/`, and `.claude/skills` is a committed symlink to that
 folder, so a session opened at this repo's root sees them all with no install step.
+`skills/shared/` sits among them and is not a skill — it has no `SKILL.md`, so nothing
+loads it as one.
 
 To have them in every session on the machine instead, link the folder into the user
 skills directory:
@@ -31,8 +34,10 @@ skills directory:
 ln -sfn "$PWD/skills" ~/.claude/skills
 ```
 
-(or link individual skills: `ln -sfn "$PWD/skills/<name>" ~/.claude/skills/<name>`).
-Repos that vendor this one copy `skills/*` into their own `.claude/skills/`.
+(or link individual skills: `ln -sfn "$PWD/skills/<name>" ~/.claude/skills/<name>` —
+link `skills/shared` alongside, since the scripts reach it at `../../shared/`).
+Repos that vendor this one copy `skills/*` into their own `.claude/skills/`, which
+brings `shared/` with them.
 
 ## Conventions shared by the four GitHub agents
 
@@ -48,6 +53,15 @@ Repos that vendor this one copy `skills/*` into their own `.claude/skills/`.
   The scripts never enumerate the user's GitHub account; if the current repo can't
   be resolved they exit 2 and the agent asks the user what to target.
 - **Env tuning**: `REPOS`, `OWNERS`, `DAYS`, `MARKER` on every script.
+- **One copy of shared code**: [`skills/shared/`](skills/shared/README.md) is not
+  a skill (no `SKILL.md`); it holds what several skills need — `repo-targets.sh`
+  (the `resolve_repos` / `$CUTOFF` library behind the paragraph above),
+  `find-pr-candidates.sh` (the open-PR sweep auto-reviewer and pr-demo-media
+  both run, given a marker and optionally `--touching <regex>` /
+  `--reviews-are-feedback`), and `ec2-ssh-sweep.sh`. Skills reach it by a
+  relative symlink, by sourcing it, or through a wrapper that holds only the
+  arguments that skill passes. It ships next to the skills, so
+  `../../shared/<file>` resolves in a vendored copy too.
 - Write surfaces: auto-reviewer and pr-demo-media post comments only;
   ci-runner posts statuses + one upserted comment; dependency-updater pushes
   branches and opens PRs; create-skill pushes one branch and opens one PR on
@@ -58,7 +72,8 @@ inventory is read-only, the on-box collectors only read (the sweep runner refuse
 containing a write/delete/package/service command), and every change is a recommendation with a
 snapshot-first, two-confirmation gate for anything irreversible (for sec-ops: transfer before
 removing a person, replace a token before revoking it, rotate after switching consumers).
-`scripts/ec2-ssh-sweep.sh` is identical in all three skills; keep the copies in sync. sec-ops
+`scripts/ec2-ssh-sweep.sh` is one file — [`skills/shared/ec2-ssh-sweep.sh`](skills/shared/README.md),
+symlinked into all three skills — so there is nothing to keep in sync. sec-ops
 hands AWS configuration findings (CloudTrail, MFA enforcement, ports) to infra-audit and cites it.
 
 The GitHub agents compose: dependency-updater opens PRs → ci-runner runs them →

@@ -4,80 +4,28 @@
 # Emits one JSON line per open, non-draft PR (in the target repos, with commits
 # within $DAYS days) that touches frontend-looking files and has no demo-marker
 # comment newer than its latest commit:
-#   {repo, number, title, url, head_sha, last_commit, frontend_files: [...]}
+#   {repo, number, title, url, head_sha, last_commit, matched_files: [...]}
 #
 # The frontend test is a heuristic (extensions + path hints); the agent makes
-# the final call. Env: REPOS / OWNERS (default: the current repo, see
-# resolve_repos), DAYS (default 7), MARKER.
+# the final call. The sweep itself is ../../shared/find-pr-candidates.sh, shared
+# with the other PR skills; this file is just pr-demo-media's arguments to it.
+#
+# Env: REPOS / OWNERS (default: the current repo, see shared/repo-targets.sh),
+# DAYS (default 7), MARKER.
 set -uo pipefail
 
-DAYS="${DAYS:-7}"
-MARKER="${MARKER:-generic-coding-agents:pr-demo-media}"
-
-FRONTEND_RE='(\.(tsx|jsx|vue|svelte|astro|html|css|scss|less)$)|(^|/)(frontend|client|web|www|app|site|ui|renderer|components|pages|views|src/routes)(/.*)?\.(ts|js|mjs)$'
-
-if date -u -v-1d +%s >/dev/null 2>&1; then
-  CUTOFF=$(date -u -v-"${DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
-else
-  CUTOFF=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+SHARED=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../shared" 2>/dev/null && pwd)
+if [[ -z "$SHARED" || ! -x "$SHARED/find-pr-candidates.sh" ]]; then
+  echo "ERROR: the shared script folder is missing — expected it next to this skill at skills/shared/." >&2
+  echo "       Re-vendor the skills repo (it ships skills/shared/ alongside every skill)." >&2
+  exit 2
 fi
 
-# Target repos, one "owner/repo" per line. Precedence:
-#   REPOS   space-separated owner/repo slugs (used as given)
-#   OWNERS  space-separated GitHub users/orgs, expanded to repos pushed within $DAYS
-#   else    the repo of the current working directory (its `origin` remote)
-# Nothing is ever enumerated from the user's GitHub account. If the current
-# repo cannot be determined, exit 2 with a message — the agent should ask the
-# user which repo(s) to target and re-run with REPOS or OWNERS set.
-resolve_repos() {
-  if [[ -n "${REPOS:-}" ]]; then
-    printf '%s\n' $REPOS
-  elif [[ -n "${OWNERS:-}" ]]; then
-    for owner in $OWNERS; do
-      gh repo list "$owner" --limit 300 --json nameWithOwner,pushedAt \
-        --jq ".[] | select(.pushedAt >= \"$CUTOFF\") | .nameWithOwner" || true
-    done
-  else
-    local url slug
-    url=$(git remote get-url origin 2>/dev/null) || url=""
-    # git@host:owner/repo.git | https://host/owner/repo(.git) | ssh://git@host/owner/repo
-    slug=$(sed -E 's#^(git@|ssh://[^@/]+@|https?://)[^/:]+[:/]##; s#/$##; s#\.git$##' <<<"$url")
-    if [[ -z "$url" || ! "$slug" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
-      echo "ERROR: could not determine the target repo from 'git remote get-url origin' in $PWD (got: '${url:-nothing}')." >&2
-      echo "       Ask the user which repo(s) to target, then re-run with REPOS='owner/repo ...' or OWNERS='org user ...'." >&2
-      exit 2
-    fi
-    echo "$slug"
-  fi
-}
+export DAYS="${DAYS:-7}"
 
-repos=$(resolve_repos) || exit $?
+FRONTEND='(\.(tsx|jsx|vue|svelte|astro|html|css|scss|less)$)|(^|/)(frontend|client|web|www|app|site|ui|renderer|components|pages|views|src/routes)(/.*)?\.(ts|js|mjs)$'
 
-for repo in $repos; do
-  prs=$(gh pr list -R "$repo" --state open --json number,isDraft \
-          --jq '.[] | select(.isDraft | not) | .number' 2>/dev/null) || continue
-
-  for n in $prs; do
-    info=$(gh pr view "$n" -R "$repo" --json number,title,url,headRefOid,commits,files 2>/dev/null) || continue
-    last_commit=$(jq -r '[.commits[].committedDate] | max // ""' <<<"$info")
-    [[ -z "$last_commit" ]] && continue
-    if [[ "$last_commit" < "$CUTOFF" ]]; then continue; fi
-
-    frontend=$(jq -c --arg re "$FRONTEND_RE" \
-                 '[.files[].path | select(test($re))]' <<<"$info")
-    [[ "$frontend" == "[]" ]] && continue
-
-    # Skip if a demo (this agent's marker, or a legacy "Automated demo"
-    # comment from repo-local demo skills) is newer than the last commit.
-    last_demo=$(gh api "repos/$repo/issues/$n/comments" --paginate \
-                  --jq ".[] | select((.body | contains(\"$MARKER\")) or (.body | contains(\"**Automated demo**\"))) | .created_at" 2>/dev/null \
-                  | sort | tail -1)
-    if [[ -n "${last_demo:-}" && "$last_demo" > "$last_commit" ]]; then
-      continue
-    fi
-
-    jq -c --arg repo "$repo" --arg last_commit "$last_commit" --argjson fe "$frontend" \
-      '{repo: $repo, number: .number, title: .title, url: .url,
-        head_sha: .headRefOid, last_commit: $last_commit, frontend_files: $fe}' <<<"$info"
-  done
-done
+# The second marker is the "Automated demo" comment older repo-local demo
+# skills posted; a PR they already demoed should not be demoed again.
+exec "$SHARED/find-pr-candidates.sh" --touching "$FRONTEND" \
+  "${MARKER:-generic-coding-agents:pr-demo-media}" '**Automated demo**'

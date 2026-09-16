@@ -15,7 +15,9 @@ Two files do the work:
 
 - `scripts/find-review-candidates.sh` — deterministic candidate discovery.
   Emits one JSON object per PR that needs a review. No AI judgment involved;
-  trust its output.
+  trust its output. (It is a wrapper that calls
+  `skills/shared/find-pr-candidates.sh`, the sweep every PR skill runs, with
+  this skill's marker — call the wrapper, not the shared script.)
 - `references/thermo-nuclear-review.md` — the full review standard (vendored
   from cursor/plugins' thermo-nuclear-code-quality-review skill). **Read it in
   full before reviewing the first PR of a session.** It defines the review

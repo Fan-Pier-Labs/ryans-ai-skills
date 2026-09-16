@@ -359,7 +359,7 @@ rediscovery. The matrix is the artifact to re-run after every departure.
 - `scripts/live-vs-repo.sh` — live hosts (fingerprint, bundles → API hosts/paths/env names) + AWS deployed units (Lambda, ECS, schedules, Glue, Step Functions, …) + repo components → `CODE-RECONCILIATION.md` with MATCH / NO MATCH per host and unit and the structural-gap checks; §2b.
 - `scripts/dependency-provenance.sh` — npm/PyPI downloads, maintainers, repo owner vs roster → `deps-provenance.md`, HIGH = low-volume + employee-maintained; §2c.
 - `scripts/saas-access-inventory.sh` — every other system with a CLI/API, guarded by what is configured; prints the screenshot list for the rest; §3.
-- `scripts/ec2-ssh-sweep.sh` — identical to the infra-audit/infra-cost-review copy; `discover` then `run`; §4.
+- `scripts/ec2-ssh-sweep.sh` — a symlink to `skills/shared/ec2-ssh-sweep.sh`, the one copy infra-audit and infra-cost-audit also use; `discover` then `run`; §4.
 - `scripts/on-box-secops.sh` — the read-only people-and-code collector; §4.
 - `scripts/domain-inventory.sh` — whois, DNS, SPF/DKIM/DMARC, who hosts each hostname; §5.
 - `scripts/secops-digest.py` — merges all `members-*.json` / `ownership-*.json` into `ACCESS-MATRIX.md` + `DIGEST.md`; §6.
