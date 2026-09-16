@@ -1,0 +1,11 @@
+{
+  "name": "ryans-ai-skills",
+  "version": "1.0.0",
+  "description": "Shared Claude Code skills. Install as a git dependency and copy each <skill>/SKILL.md directory into a repo's .claude/skills/.",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fan-Pier-Labs/ryans-ai-skills.git"
+  }
+}
