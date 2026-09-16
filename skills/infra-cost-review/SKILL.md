@@ -181,5 +181,5 @@ have SSM) in the project's CLAUDE.md so the next review takes minutes.
 - `references/cost-smells.md` — the catalog: detection, why, recommendation, reversibility, plus what each SSH-sweep section settles. Read during §5.
 - `references/report-template.md` — the tiered report skeleton and per-finding contract. Read during §6.
 - `scripts/aws-cost-inventory.sh` — read-only AWS inventory; run during §2. `--help` for flags.
-- `scripts/ec2-ssh-sweep.sh` — `discover` running instances, then `run` a collector on each over SSH or SSM; §3.
+- `scripts/ec2-ssh-sweep.sh` — `discover` running instances, then `run` a collector on each over SSH or SSM; §3. A symlink to `skills/shared/ec2-ssh-sweep.sh`, shared with infra-audit and sec-ops.
 - `scripts/on-box-cost.sh` — the read-only collector the sweep sends to each box; memory, I/O, traffic, logins, deploys.

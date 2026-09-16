@@ -55,42 +55,16 @@ mkdir -p "$STATE_DIR"
 log()  { printf '[pr-watcher] %s\n' "$*" >&2; }
 warn() { printf '[pr-watcher] WARNING: %s\n' "$*" >&2; }
 
-if date -u -v-1d +%s >/dev/null 2>&1; then
-  CUTOFF=$(date -u -v-"${DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
-  PR_SINCE=$(date -u -v-"${PR_DAYS}"d +%Y-%m-%d)
-else
-  CUTOFF=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
-  PR_SINCE=$(date -u -d "-${PR_DAYS} days" +%Y-%m-%d)
+# Target repos (REPOS / OWNERS / the current checkout) and $CUTOFF, $DAYS days
+# ago, both come from the shared library every GitHub skill uses.
+SHARED=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../shared" 2>/dev/null && pwd)
+if [[ -z "$SHARED" || ! -f "$SHARED/repo-targets.sh" ]]; then
+  echo "ERROR: the shared script folder is missing — expected it next to this skill at skills/shared/." >&2
+  echo "       Re-vendor the skills repo (it ships skills/shared/ alongside every skill)." >&2
+  exit 2
 fi
-
-# Target repos, one "owner/repo" per line. Precedence:
-#   REPOS   space-separated owner/repo slugs (used as given)
-#   OWNERS  space-separated GitHub users/orgs, expanded to repos pushed within $DAYS
-#   else    the repo of the current working directory (its `origin` remote)
-# Nothing is ever enumerated from the user's GitHub account. If the current
-# repo cannot be determined, exit 2 with a message — the agent should ask the
-# user which repo(s) to target and re-run with REPOS or OWNERS set.
-resolve_repos() {
-  if [[ -n "${REPOS:-}" ]]; then
-    printf '%s\n' $REPOS
-  elif [[ -n "${OWNERS:-}" ]]; then
-    for owner in $OWNERS; do
-      gh repo list "$owner" --limit 300 --json nameWithOwner,pushedAt \
-        --jq ".[] | select(.pushedAt >= \"$CUTOFF\") | .nameWithOwner" || true
-    done
-  else
-    local url slug
-    url=$(git remote get-url origin 2>/dev/null) || url=""
-    # git@host:owner/repo.git | https://host/owner/repo(.git) | ssh://git@host/owner/repo
-    slug=$(sed -E 's#^(git@|ssh://[^@/]+@|https?://)[^/:]+[:/]##; s#/$##; s#\.git$##' <<<"$url")
-    if [[ -z "$url" || ! "$slug" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
-      echo "ERROR: could not determine the target repo from 'git remote get-url origin' in $PWD (got: '${url:-nothing}')." >&2
-      echo "       Ask the user which repo(s) to target, then re-run with REPOS='owner/repo ...' or OWNERS='org user ...'." >&2
-      exit 2
-    fi
-    echo "$slug"
-  fi
-}
+. "$SHARED/repo-targets.sh"
+PR_SINCE=$(ts_days_ago "$PR_DAYS" +%Y-%m-%d)
 
 # --- queue primitives ---------------------------------------------------------
 # Enqueues arrive from the receiver's threads and from the poll loop at once, so

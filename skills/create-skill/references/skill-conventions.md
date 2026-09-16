@@ -13,6 +13,9 @@ skills/<name>/
   scripts/*.sh|*.py     # only for deterministic discovery/inventory; read-only
   README.md             # only if design notes don't fit in SKILL.md (ci-runner has one)
   evals/evals.json      # optional — trigger/behaviour evals
+
+skills/shared/          # not a skill (no SKILL.md) — the one copy of whatever
+                        # two or more skills need; see skills/shared/README.md
 ```
 
 Markdown first. A skill is a procedure the model follows; scripts exist
@@ -70,6 +73,13 @@ infra-audit both do this).
   `<!-- generic-coding-agents:<name> sha:<head_sha> -->`. Discovery
   compares the marker against the PR's latest commit; nothing is posted
   twice for one head.
+- **Never a second copy**: anything a second skill needs goes in
+  `skills/shared/` and the skill reaches it by a relative symlink, by
+  sourcing it, or through a wrapper holding only that skill's defaults —
+  never by copying the file. `resolve_repos` and the "which repos"
+  paragraph above come from `shared/repo-targets.sh`; a skill that sweeps
+  open PRs wraps `shared/find-pr-candidates.sh` instead of writing its own
+  loop. Read `skills/shared/README.md` before adding a script.
 - **Env**: `REPOS`, `OWNERS`, `DAYS`, `MARKER` on every discovery script;
   `STATE_DIR` under `~/.cache/generic-coding-agents/<name>` if the skill
   keeps state.
