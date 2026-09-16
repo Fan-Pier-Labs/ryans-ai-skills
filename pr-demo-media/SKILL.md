@@ -36,6 +36,16 @@ scan their account.
    final call: skip PRs where the "frontend" files are config, test, or
    generated churn, and skip backend PRs that slipped through. Genuinely
    nothing showable → say so in the pass summary, post nothing.
+
+   **Only user-visible change is in scope.** The question for every PR is
+   "what would a user see differently?" Ask it of the surfaces a user
+   actually meets — the UI, the strings it renders, settings, CLI output —
+   and if none of them moved, that is the answer. Skip the PR, post nothing,
+   move on. Do not go spelunking through a refactor's diff hunting for
+   something showable: module moves, type tightening, dedupe into a shared
+   helper, deleted dead code, test restructuring and internal renames get no
+   demo however large the diff. A PR whose own description is a list of
+   internal cleanups is a skip you can make from the description alone.
 2. Demo each real candidate (below).
 3. When looping continuously, schedule the next pass 20–30 min out (`/loop` or
    `ScheduleWakeup`); the marker makes passes idempotent per head SHA.
@@ -63,6 +73,9 @@ what's the shortest flow that shows it?* Write the 3–6 beats before any code.
   both labeled. Skip the pair when the "before" is self-evident: an unticked
   checkbox, a renamed button, an element that simply wasn't there. Two images
   of an obvious difference read as padding, not evidence.
+
+Neither, when nothing a user meets changed — see the scope rule in the loop
+above. Post nothing rather than dressing up a refactor.
 
 **Video** when the change is *how something behaves*:
 - multi-step flows (login, wizard, checkout), navigation changes
