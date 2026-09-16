@@ -129,11 +129,15 @@ watcher died without cleaning up — start it again.
 
 ## `stop`
 
-`scripts/watch.sh --stop`. On a clean exit `gh webhook forward` removes its
-temporary hook from the repo. Pending items stay queued on disk for the next
-`run`. After a hard kill (machine sleep, `kill -9`) a hook pointing at
-`webhook-forwarder.github.com` can linger in the repo's webhook settings —
-that is the residue, and it is safe to delete.
+`scripts/watch.sh --stop`. It waits up to 20s for the watcher to exit and
+says whether it did. On the way out the watcher removes any temporary hook
+(`webhook-forwarder.github.com`) it registered — `gh webhook forward` is
+supposed to do that itself and in practice often dies first. Pending items
+stay queued on disk for the next `run`.
+
+Only a hard kill (`kill -9`, the machine dying) skips that cleanup; then a
+forwarder hook can linger in the repo's webhook settings. The next `run`'s
+stop will remove it, or delete it by hand — nothing else uses that URL.
 
 ## Guardrails
 

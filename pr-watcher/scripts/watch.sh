@@ -161,14 +161,39 @@ FORWARD_REPOS=()
 RECEIVER_PID=""
 RUN_DIR=""
 
+SLEEP_PID=""
+
+# Interruptible sleep. A plain `sleep N` in the foreground defers every trap
+# until N elapses (bash runs traps only between foreground commands), so a
+# --stop would take up to FALLBACK_SWEEP to land. `wait` is interruptible.
+snooze() { { sleep "$1" & SLEEP_PID=$!; wait "$SLEEP_PID"; } 2>/dev/null; SLEEP_PID=""; }   # group: hides the "Terminated" job notice on stop
+
+# Runs once, whichever of EXIT / INT / TERM gets there first.
 cleanup() {
-  local pid
+  trap - EXIT INT TERM
+  local pid repo i
+  [[ -n "$SLEEP_PID" ]] && kill "$SLEEP_PID" 2>/dev/null
   for pid in "${FORWARD_PIDS[@]:-}"; do [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; done
   [[ -n "$RECEIVER_PID" ]] && kill "$RECEIVER_PID" 2>/dev/null
+  # `gh webhook forward` is supposed to delete its temporary hook on exit and
+  # in practice often doesn't make it in time. The watcher knows which repos it
+  # registered on, so it removes any forwarder hook left behind itself.
+  if [[ ${#FORWARD_PIDS[@]} -gt 0 ]]; then
+    for i in 1 2 3 4 5; do any_forwarder_alive || break; sleep 1; done
+    for repo in "${REPO_LIST[@]:-}"; do
+      [[ -n "$repo" ]] || continue
+      for pid in $(gh api "repos/$repo/hooks"                      --jq '.[] | select(.config.url | contains("webhook-forwarder.github.com")) | .id' 2>/dev/null); do
+        gh api -X DELETE "repos/$repo/hooks/$pid" >/dev/null 2>&1 && log "removed leftover forwarder hook $pid on $repo"
+      done
+    done
+  fi
   echo stopped >"$MODE_FILE"
   rm -f "$PID_FILE"
   [[ -n "$RUN_DIR" ]] && rm -rf "$RUN_DIR"
 }
+
+# A TERM handler that only cleans up would let the loop resume afterwards.
+on_signal() { cleanup; exit 143; }
 
 # The gh-webhook extension, installed on demand. Returns 1 (not fatal) if it
 # cannot be made available — the caller degrades to polling.
@@ -206,7 +231,7 @@ start_forwarders() {
   done
   # Creating the webhook is the step that fails on missing admin rights, and
   # it fails within a second or two. Grace period, then check.
-  sleep 10
+  snooze 10
   for i in "${!FORWARD_PIDS[@]}"; do
     if kill -0 "${FORWARD_PIDS[$i]}" 2>/dev/null; then
       live=$((live + 1)); log "events live for ${FORWARD_REPOS[$i]}"
@@ -236,7 +261,8 @@ watch() {
 
   RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-watcher.XXXXXX")
   echo $$ >"$PID_FILE"
-  trap cleanup EXIT INT TERM
+  trap cleanup EXIT
+  trap on_signal INT TERM
   log "targets: ${REPO_LIST[*]}"
   log "queue: $QUEUE"
 
@@ -250,7 +276,7 @@ watch() {
   if [[ "$mode" = events ]]; then
     log "MODE=events — queuing on push/pull_request deliveries; safety-net poll every ${FALLBACK_SWEEP}s"
     while true; do
-      sleep "$FALLBACK_SWEEP"
+      snooze "$FALLBACK_SWEEP"
       if ! any_forwarder_alive; then
         warn "all webhook forwarders have died — degrading to polling every ${POLL_INTERVAL}s"
         echo polling >"$MODE_FILE"
@@ -262,7 +288,7 @@ watch() {
 
   log "MODE=polling — checking heads every ${POLL_INTERVAL}s"
   while true; do
-    sleep "$POLL_INTERVAL"
+    snooze "$POLL_INTERVAL"
     poll
   done
 }
@@ -276,7 +302,12 @@ case "${1:-}" in
   --status)    status ;;
   --stop)
     if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      kill "$(cat "$PID_FILE")"; log "stopped watcher $(cat "$PID_FILE" 2>/dev/null)"
+      pid=$(cat "$PID_FILE"); kill "$pid"
+      for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+      if kill -0 "$pid" 2>/dev/null; then
+        warn "watcher $pid did not exit within 20s; not forcing it (a kill -9 would leave the webhook behind)"; exit 1
+      fi
+      log "stopped watcher $pid"
     else
       log "no watcher running"
     fi ;;
