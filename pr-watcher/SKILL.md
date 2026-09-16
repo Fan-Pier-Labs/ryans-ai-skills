@@ -1,18 +1,19 @@
 ---
 name: pr-watcher
-description: Watch the target repos for pull requests that get new commits — GitHub webhook deliveries when possible, polling otherwise — and run another skill on each changed PR. "/pr-watcher run /auto-reviewer" reviews every PR the moment it changes; "/pr-watcher run /ci-runner /auto-reviewer" does both from one watcher. One webhook, one queue, any number of skills, changed PRs handled in parallel. Use whenever the user wants a skill to react to PR activity instead of sweeping on a timer — "watch PRs and review them", "run CI when a PR changes", "start the watcher", "trigger X whenever a PR updates".
+description: Run another skill on every qualifying pull request — first a sweep of the ones open now, then each one again the moment it gets new commits (GitHub webhook deliveries when possible, polling otherwise). Qualifying means authored by the user and opened in the last 7 days unless told otherwise. "/pr-watcher run /auto-reviewer" reviews your open PRs now and every one as it changes; "/pr-watcher run /ci-runner /auto-reviewer" does both from one watcher. One webhook, one queue, any number of skills, PRs handled in parallel. Use whenever the user wants a skill to react to PR activity instead of sweeping on a timer — "watch PRs and review them", "run CI when a PR changes", "start the watcher", "trigger X whenever a PR updates".
 ---
 
 # PR Watcher
 
 Two layers, and the seam between them is the whole design:
 
-- **`scripts/watch.sh`** (a background process) notices when an open,
-  non-draft PR gets a new head and appends it to a queue file. It never acts
-  on the change and never writes to GitHub. Webhook deliveries when it can
-  get them, polling when it can't (details below).
+- **`scripts/watch.sh`** (a background process) queues PR heads to a file.
+  At start it sweeps every open PR that qualifies (below) and queues each
+  one; from then on it queues a qualifying PR again whenever it gets a new
+  head. It never acts on a queued head and never writes to GitHub. Webhook
+  deliveries when it can get them, polling when it can't (details below).
 - **You** (the agent running this skill) drain that queue and invoke the
-  target skill(s) on each changed PR — a subagent per PR, several at once.
+  target skill(s) on each queued PR — a subagent per PR, several at once.
 
 The seam exists because **a detached shell process cannot invoke a skill;
 only a live agent can.** So while no agent is running `/pr-watcher`, the queue
@@ -27,12 +28,16 @@ watching the same repo would triple all of that for the same events.
 ## Usage
 
 ```
-/pr-watcher run /auto-reviewer                    # review every PR as it changes
+/pr-watcher run /auto-reviewer                    # review my open PRs now, then each as it changes
 /pr-watcher run /ci-runner /auto-reviewer         # CI and review, one watcher
 /pr-watcher run /ci-runner /auto-reviewer /pr-demo-media
 /pr-watcher status
 /pr-watcher stop
 ```
+
+Widen or narrow the PRs in words — "everyone's PRs", "from the last month",
+"only alice's" — and set `AUTHOR` / `PR_DAYS` on the watcher accordingly
+(see **Which PRs qualify**).
 
 Every target skill must be installed as a sibling of this one and have a
 **"Single-PR invocation"** section in its `SKILL.md` — that section is the
@@ -49,6 +54,22 @@ are expanded to their repos pushed within `DAYS`). If the script exits with
 target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
 scan their account.
 
+## Which PRs qualify
+
+The watcher applies one rule everywhere — the start-up sweep, the poll, and
+webhook deliveries alike — so a skill is never run on a PR the sweep would
+not have found:
+
+- open and not a draft;
+- authored by **`AUTHOR`**, default `@me` (the `gh`-authenticated user).
+  `AUTHOR=anyone` drops the author filter; any GitHub login narrows it;
+- created within the last **`PR_DAYS`** days, default `7`. `PR_DAYS=0`
+  drops the age filter.
+
+The defaults are deliberate: these skills spend real tokens per PR, and the
+PRs the user is working on this week are the ones worth spending on. Widen
+only when the user says so.
+
 ## `run` — starting
 
 1. **Resolve the targets.** Each `/name` must exist as `../name/SKILL.md`
@@ -57,29 +78,26 @@ scan their account.
    all. A missing skill is a hard stop: say which, don't substitute.
 
 2. **Start the watcher** in the background and keep it running for the
-   session:
+   session, with `AUTHOR` / `PR_DAYS` only if the user asked for something
+   other than the defaults:
 
    ```bash
    REPOS='owner/repo' scripts/watch.sh
    ```
 
-   Wait for its `MODE=events` or `MODE=polling` line (allow ~30s; the first
-   run may install the `gh-webhook` extension). Relay the mode to the user.
-   If it is polling, relay the `WARNING` line verbatim — the usual cause is
-   no admin rights on the repo, and the user should know events are not live.
+   It sweeps first: its `SWEEP=done — N qualifying heads queued` line says
+   how many open PRs it found. Relay that count — if it is 0, say so, and say
+   what the filter was (author, window); the user may have meant a wider
+   one. Then wait for its `MODE=events` or `MODE=polling` line (allow ~30s;
+   the first run may install the `gh-webhook` extension). Relay the mode. If
+   it is polling, relay the `WARNING` line verbatim — the usual cause is no
+   admin rights on the repo, and the user should know events are not live.
 
-3. **Catch up on the backlog.** The watcher seeds every current head as
-   already-seen and queues only what changes afterwards — it does not know
-   which existing PRs still need work. The target skill does: run its own
-   discovery once and treat every result as a queued item for that skill.
-
-   | Skill | Discovery |
-   | --- | --- |
-   | ci-runner | `ci-runner/scripts/ci-runner.sh --discover` (TSV: repo, pr, sha) |
-   | auto-reviewer | `auto-reviewer/scripts/find-review-candidates.sh` (JSON lines) |
-   | pr-demo-media | `pr-demo-media/scripts/find-demo-candidates.sh` (JSON lines) |
-
-4. Enter the drain loop.
+3. **Enter the drain loop.** The first tick drains the sweep, so every
+   qualifying open PR is handled before any change arrives. The queue does
+   not know which of them a skill has already handled — the skill's own
+   idempotency check does, and the dispatch step below runs it before
+   spending anything.
 
 ## The drain loop
 
@@ -106,8 +124,14 @@ shell call: run `ci-runner/scripts/ci-runner.sh --run-one REPO PR SHA` in the
 background and count it against `JOBS`. Its `local-ci` commit status is the
 result.
 
-**Judgment skills get one subagent per PR** (general-purpose), with this
-prompt — the "Single-PR invocation" section it points at does the rest:
+**Judgment skills get one subagent per PR** (general-purpose). Before
+spawning it, run the skill's idempotency check yourself — the one command in
+its "Single-PR invocation" section (a marker-comment lookup) — and if the
+head is already handled, report `skipped: already handled` and spawn
+nothing. After a sweep most items are exactly that, and a subagent that
+starts up only to find the marker is the expensive way to learn it. Then, for
+the rest, this prompt — the "Single-PR invocation" section it points at does
+the rest:
 
 ```
 Invoke the `<skill>` skill for exactly one pull request: <repo>#<pr>, head <sha>.
@@ -154,11 +178,13 @@ stop will remove it, or delete it by hand — nothing else uses that URL.
 
 ## Tuning
 
-`REPOS` / `OWNERS` / `DAYS` as on every script in this repo. `JOBS`
-(concurrent subagents, default 3). `POLL_INTERVAL` (polling-mode gap,
-default 300s). `FALLBACK_SWEEP` (event-mode safety-net poll, default 1800s —
-`gh webhook forward` has no delivery guarantee). `STATE_DIR` (queue, ledger,
-pid; default `~/.cache/generic-coding-agents/pr-watcher`).
-`ENQUEUE_EXISTING=1` queues every current head at start instead of seeding
-them as seen — use it when you want the watcher, not the skills' discovery,
-to define the backlog.
+`REPOS` / `OWNERS` / `DAYS` as on every script in this repo. `AUTHOR`
+(default `@me`; `anyone` for no author filter) and `PR_DAYS` (default 7; 0
+for no age filter) define which PRs qualify. `SWEEP=0` skips the start-up
+sweep and marks the current heads as seen, so only later changes are queued.
+`scripts/watch.sh --sweep` queues the qualifying heads on demand without
+starting a watcher. `JOBS` (concurrent subagents, default 3).
+`POLL_INTERVAL` (polling-mode gap, default 300s). `FALLBACK_SWEEP`
+(event-mode safety-net poll, default 1800s — `gh webhook forward` has no
+delivery guarantee). `STATE_DIR` (queue, ledger, pid; default
+`~/.cache/generic-coding-agents/pr-watcher`).

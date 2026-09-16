@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # watch.sh — the one PR-change watcher for the GitHub agent skills.
 #
-# Notices when an open, non-draft PR in the target repos gets a new head —
+# At start it sweeps every open PR that qualifies — authored by $AUTHOR
+# (default @me) and created within $PR_DAYS days (default 7), never drafts —
+# and queues each head. Then it notices when a qualifying PR gets a new head —
 # through GitHub webhook deliveries when it can, polling when it can't — and
-# appends the change to a queue file. It never acts on a change itself. Which
-# skill handles a changed PR is decided by the agent running /pr-watcher: it
-# drains the queue and invokes that skill per PR. (A detached shell process
-# cannot invoke a skill; only a live agent can. See ../SKILL.md.)
+# queues that too. It never acts on a queued head itself. Which skill handles
+# it is decided by the agent running /pr-watcher: it drains the queue and
+# invokes that skill per PR. (A detached shell process cannot invoke a skill;
+# only a live agent can. See ../SKILL.md.)
 #
 # Modes:
-#   (default)                    watch forever: seed, webhook or poll, enqueue changes
+#   (default)                    watch forever: sweep, then webhook or poll, queuing changes
+#   --sweep                      queue every qualifying open head now, then exit
 #   --enqueue REPO PR SHA [VIA]  append one change; deduped by repo#pr@sha
 #   --drain                      print pending items as JSON lines and clear them
 #   --status                     one line: mode, pending, seen, pid
@@ -24,13 +27,17 @@
 # when events are healthy, because the forwarder has no delivery guarantee.
 #
 # Env: REPOS / OWNERS / DAYS (as every skill script; default: the current repo),
-# POLL_INTERVAL (polling-mode gap, default 300s), FALLBACK_SWEEP (event-mode
-# safety-net poll, default 1800s), STATE_DIR (queue and ledger live here,
-# default ~/.cache/generic-coding-agents/pr-watcher), ENQUEUE_EXISTING=1 to
-# queue every current head at start instead of only what changes afterwards.
+# AUTHOR (which PRs qualify, default @me; `anyone` for no author filter),
+# PR_DAYS (PRs created within this many days qualify, default 7; 0 for no age
+# filter), SWEEP=0 to skip the start-up sweep and only queue what changes
+# afterwards, POLL_INTERVAL (polling-mode gap, default 300s), FALLBACK_SWEEP
+# (event-mode safety-net poll, default 1800s), STATE_DIR (queue and ledger
+# live here, default ~/.cache/generic-coding-agents/pr-watcher).
 set -uo pipefail
 
 DAYS="${DAYS:-30}"
+AUTHOR="${AUTHOR:-@me}"
+PR_DAYS="${PR_DAYS:-7}"
 POLL_INTERVAL="${POLL_INTERVAL:-300}"
 FALLBACK_SWEEP="${FALLBACK_SWEEP:-1800}"
 STATE_DIR="${STATE_DIR:-$HOME/.cache/generic-coding-agents/pr-watcher}"
@@ -50,8 +57,10 @@ warn() { printf '[pr-watcher] WARNING: %s\n' "$*" >&2; }
 
 if date -u -v-1d +%s >/dev/null 2>&1; then
   CUTOFF=$(date -u -v-"${DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
+  PR_SINCE=$(date -u -v-"${PR_DAYS}"d +%Y-%m-%d)
 else
   CUTOFF=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+  PR_SINCE=$(date -u -d "-${PR_DAYS} days" +%Y-%m-%d)
 fi
 
 # Target repos, one "owner/repo" per line. Precedence:
@@ -93,6 +102,12 @@ unlock() { rmdir "$LOCK" 2>/dev/null; }
 # Idempotent: a head that was already queued or seeded is a no-op.
 enqueue() { # repo pr sha [via]
   local key="$1#$2@$3" via="${4:-manual}"
+  # Sweep and poll only ever see qualifying heads. A webhook delivery is for
+  # any PR in the repo, so it gets the same test before it can queue anything.
+  if [[ "$via" = webhook ]] && ! heads "$1" | awk -F'\t' -v n="$2" '$1==n{f=1} END{exit !f}'; then
+    log "ignored $1#$2 @ ${3:0:7}: does not qualify (AUTHOR=$AUTHOR PR_DAYS=$PR_DAYS)"
+    return 0
+  fi
   lock
   if grep -qxF "$key" "$SEEN" 2>/dev/null; then unlock; return 0; fi
   echo "$key" >>"$SEEN"
@@ -120,38 +135,49 @@ status() {
   echo "mode=$mode pending=$pending seen=$seen pid=$pid alive=$alive"
 }
 
-# Open non-draft PR heads for one repo, as "pr<TAB>sha" lines.
+# The qualifying open PR heads of one repo, as "pr<TAB>sha" lines. This is
+# the one definition of "qualifies": open, not a draft, authored by $AUTHOR
+# (@me = the gh-authenticated user) unless AUTHOR=anyone, and created within
+# $PR_DAYS days unless PR_DAYS=0.
 heads() { # repo
-  gh pr list -R "$1" --state open --json number,isDraft,headRefOid \
+  local args=(-R "$1" --state open --limit 500 --json number,isDraft,headRefOid)
+  [[ "$AUTHOR" != anyone ]] && args+=(--author "$AUTHOR")
+  [[ "$PR_DAYS" -gt 0 ]] && args+=(--search "created:>=$PR_SINCE")
+  gh pr list "${args[@]}" \
     --jq '.[] | select(.isDraft | not) | [(.number|tostring), .headRefOid] | @tsv' 2>/dev/null
 }
 
-# Enqueue every current head; dedup makes unchanged ones no-ops, so this is
-# both the polling step and the safety net under event mode.
-poll() {
+# Queue every qualifying current head, tagged with how it got there. Dedup
+# makes already-seen heads no-ops, so this is the start-up sweep, the polling
+# step and the safety net under event mode, all in one.
+enqueue_heads() { # via
   local repo n sha
   for repo in "${REPO_LIST[@]}"; do
     while IFS=$'\t' read -r n sha; do
-      [[ -n "${n:-}" ]] && enqueue "$repo" "$n" "$sha" poll
+      [[ -n "${n:-}" ]] && enqueue "$repo" "$n" "$sha" "$1"
     done < <(heads "$repo")
   done
 }
+sweep() { enqueue_heads sweep; }
+poll()  { enqueue_heads poll; }
 
-# Mark every current head as seen without queuing it. The watcher reports
-# changes; the backlog is the target skill's own discovery script's job (it
-# knows which PRs actually need work), and /pr-watcher runs that on start.
+# SWEEP=0: mark every qualifying head as seen without queuing it, so only
+# what changes from here on is queued.
 seed() {
   local repo n sha
   for repo in "${REPO_LIST[@]}"; do
     while IFS=$'\t' read -r n sha; do
-      [[ -z "${n:-}" ]] && continue
-      if [[ "${ENQUEUE_EXISTING:-0}" = 1 ]]; then
-        enqueue "$repo" "$n" "$sha" seed
-      else
-        lock; grep -qxF "$repo#$n@$sha" "$SEEN" 2>/dev/null || echo "$repo#$n@$sha" >>"$SEEN"; unlock
-      fi
+      [[ -n "${n:-}" ]] || continue
+      lock; grep -qxF "$repo#$n@$sha" "$SEEN" 2>/dev/null || echo "$repo#$n@$sha" >>"$SEEN"; unlock
     done < <(heads "$repo")
   done
+}
+
+load_repos() {
+  local repo
+  REPO_LIST=()
+  while IFS= read -r repo; do [[ -n "$repo" ]] && REPO_LIST+=("$repo"); done < <(resolve_repos)
+  [[ ${#REPO_LIST[@]} -gt 0 ]] || exit 2
 }
 
 # --- event mode ---------------------------------------------------------------
@@ -250,24 +276,30 @@ any_forwarder_alive() {
 }
 
 watch() {
-  local repo
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     echo "ERROR: a watcher is already running (pid $(cat "$PID_FILE")). Use --stop first." >&2
     exit 1
   fi
-  REPO_LIST=()
-  while IFS= read -r repo; do [[ -n "$repo" ]] && REPO_LIST+=("$repo"); done < <(resolve_repos)
-  [[ ${#REPO_LIST[@]} -gt 0 ]] || exit 2
+  load_repos
 
   RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-watcher.XXXXXX")
   echo $$ >"$PID_FILE"
   trap cleanup EXIT
   trap on_signal INT TERM
   log "targets: ${REPO_LIST[*]}"
+  log "qualifying: open, non-draft, author=$AUTHOR, created within ${PR_DAYS}d"
   log "queue: $QUEUE"
 
-  seed
-  log "seeded $(grep -c . "$SEEN" 2>/dev/null || echo 0) current heads; only changes from here on are queued"
+  if [[ "${SWEEP:-1}" = 1 ]]; then
+    local before after
+    before=$(grep -c . "$QUEUE" 2>/dev/null); before=${before:-0}
+    sweep
+    after=$(grep -c . "$QUEUE" 2>/dev/null); after=${after:-0}
+    log "SWEEP=done — $((after - before)) qualifying heads queued, $after pending in total"
+  else
+    seed
+    log "SWEEP=skipped — $(grep -c . "$SEEN" 2>/dev/null || echo 0) heads marked seen; only changes from here on are queued"
+  fi
 
   local mode=polling
   if ensure_extension && start_receiver && start_forwarders; then mode=events; fi
@@ -297,6 +329,7 @@ watch() {
 
 case "${1:-}" in
   "")          watch ;;
+  --sweep)     load_repos; sweep ;;
   --enqueue)   shift; [[ $# -ge 3 ]] || { echo "usage: $0 --enqueue REPO PR SHA [VIA]" >&2; exit 2; }; enqueue "$@" ;;
   --drain)     drain ;;
   --status)    status ;;
@@ -311,5 +344,5 @@ case "${1:-}" in
     else
       log "no watcher running"
     fi ;;
-  *) echo "usage: $0 [--enqueue REPO PR SHA [VIA] | --drain | --status | --stop]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--sweep | --enqueue REPO PR SHA [VIA] | --drain | --status | --stop]" >&2; exit 2 ;;
 esac
