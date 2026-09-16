@@ -193,8 +193,12 @@ still coordinate.
 within it every open PR (drafts included — a draft still conflicts). Repos with
 no recent activity are left alone.
 
-**Mechanical check.** Fetch every open PR head into one shallow clone. First
-check each PR against current `main` — a PR that merged cleanly yesterday can
+**Mechanical check.** Fetch every open PR head into one **full** clone — not
+the shallow one used for reviewing: `git merge-base` in a shallow clone can
+return a commit that is not the real base (seen live: a PR that already
+contained a merge was reported as based before it), which fabricates "N
+behind" counts and phantom conflicts. `git fetch --unshallow` first if you are
+reusing a review clone. First check each PR against current `main` — a PR that merged cleanly yesterday can
 stop merging today because something else landed (a file move is the usual
 cause), and that is worth saying on the PR before its author finds out at
 rebase time. Then run `git merge-tree` over each pair. `--write-tree` exits
@@ -202,7 +206,7 @@ non-zero on a conflict and `--name-only` lists the files:
 
 ```bash
 git fetch -q origin main
-for n in $PRS; do git fetch -q --depth 200 origin "pull/$n/head:pr-$n"; done
+for n in $PRS; do git fetch -q origin "pull/$n/head:pr-$n"; done
 for n in $PRS; do
   out=$(git merge-tree --write-tree --name-only origin/main "pr-$n" 2>&1); rc=$?
   behind=$(git rev-list --count "$(git merge-base origin/main pr-$n)..origin/main")
@@ -252,23 +256,24 @@ review marker, or the discovery script would count it as a review and stop
 re-reviewing that PR:
 
 ```markdown
-<!-- generic-coding-agents:pr-conflicts self:<own head short> main:<main head short> pairs:<n>@<their head short>,... -->
+<!-- generic-coding-agents:pr-conflicts pr:<N> main:<clean|conflict> pairs:<n>@<files>,... -->
 ## ⚠️ Merge conflicts with other open PRs
 ```
 
-The marker is the dedup key: if a comment with the identical marker already
-exists, the situation has not changed and nothing is posted. Any head moving —
-the PR's own, a partner's, or `main`'s — changes the marker, so the note
-refreshes exactly when it could be stale. That makes the marker a *ceiling*,
-not a trigger: when the marker differs, recompute, and post only if the
-substance changed — the set of conflicting PRs, the files involved, or whether
-the PR merges into `main`. A rebase that moves every head by a few commits
-while the same two PRs still collide on the same file is not news; posting it
-again every pass is noise on a busy repo. A PR with no conflicts at all gets
-no note, with one exception: when an earlier note on it named conflicts that
-have since cleared, post a short "clean now" note so the stale one is not
-read as current. Otherwise the clean bill appears in the other PRs' "no
-conflict with" lines.
+where `<files>` is the first 8 hex of `sha1` over the sorted, newline-joined
+list of files that pair conflicts on (a semantic-only pair — a deleted symbol
+another PR calls — uses the word `semantic`). The marker encodes the
+*situation*, not the heads: the PR's number, whether it merges into `main`,
+and which partners collide on which files. So an identical marker means an
+identical situation, and dedup is a string compare — if the latest
+`pr-conflicts` comment on the PR carries the same marker, post nothing. A
+rebase that moves every SHA while the same two PRs still collide on the same
+file produces the same marker and no repost, which is what a busy repo needs.
+A PR with no conflicts at all gets no note, with one exception: when an
+earlier note on it named conflicts that have since cleared, post a short
+"clean now" note (marker `main:clean pairs:`) so the stale one is not read as
+current. Otherwise the clean bill appears in the other PRs' "no conflict with"
+lines.
 Conflict notes are comments, like reviews — never a formal review, never a
 label, never a push.
 
