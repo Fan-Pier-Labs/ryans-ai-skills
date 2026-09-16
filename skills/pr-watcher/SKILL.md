@@ -120,7 +120,7 @@ Each tick:
 ## Dispatching one item
 
 **Deterministic skills need no subagent.** ci-runner's per-PR command is a
-shell call: run `ci-runner/scripts/ci-runner.sh --run-one REPO PR SHA` in the
+shell call: run `skills/ci-runner/scripts/ci-runner.sh --run-one REPO PR SHA` in the
 background and count it against `JOBS`. Its `local-ci` commit status is the
 result.
 

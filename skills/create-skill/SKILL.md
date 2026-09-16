@@ -94,10 +94,10 @@ Read `references/skill-conventions.md` first and follow it — it is the
 style every other skill in the repo is written in, and a PR that ignores it
 gets reviewed back into shape. The short version:
 
-- `<name>/SKILL.md` with frontmatter `name:` (matches the directory) and a
+- `skills/<name>/SKILL.md` with frontmatter `name:` (matches the directory) and a
   `description:` that says what it does *and* lists the trigger phrases.
 - Long material (checklists, report templates, recipes) goes in
-  `<name>/references/*.md`, not inline. Markdown first: **do not write
+  `skills/<name>/references/*.md`, not inline. Markdown first: **do not write
   helper scripts unless the skill needs deterministic discovery** (finding
   candidate PRs, inventorying an account). If it does, `scripts/*.sh`, read-only,
   `set -euo pipefail`, honouring `REPOS` / `OWNERS` / `DAYS` / `MARKER` like the others.
@@ -119,9 +119,9 @@ Then wire it into the README:
 ## 5. Check it before pushing
 
 ```bash
-head -5 <name>/SKILL.md                                           # frontmatter present, name matches dir
-grep -rnE -i 'fan.?pier|ryan|@[a-z0-9-]+\.com|[0-9]{12}' <name> README.md | grep -v generic-coding-agents || true   # personal refs → fix
-find <name>/scripts -name '*.sh' -exec bash -n {} \; -exec test -x {} \; -print 2>/dev/null   # scripts parse and are executable
+head -5 skills/<name>/SKILL.md                                           # frontmatter present, name matches dir
+grep -rnE -i 'fan.?pier|ryan|@[a-z0-9-]+\.com|[0-9]{12}' skills/<name> README.md | grep -v generic-coding-agents || true   # personal refs → fix
+find skills/<name>/scripts -name '*.sh' -exec bash -n {} \; -exec test -x {} \; -print 2>/dev/null   # scripts parse and are executable
 git status --short
 ```
 
