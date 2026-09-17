@@ -1,6 +1,6 @@
 # Code review report template
 
-Use this shape. Every one of the eighteen questions gets a row in the scorecard and a section,
+Use this shape. Every one of the twenty questions gets a row in the scorecard and a section,
 even when the answer is "Yes, verified" in one line — a reader checking the review against the
 checklist should never wonder whether a question was skipped. Lead with the worst thing. Write
 for someone who knows the domain but didn't watch you work: what it is, why it matters, what to
@@ -51,6 +51,8 @@ time.>
 | 16 | Baseline ESLint rules enabled (TS/JS) | <n>% / N/A | High below ~80% | <62/105 as error; promise group absent> |
 | 17 | Test coverage ≥ 80%, threshold enforced | <n>% lines / <n>% branches | High | <71% lines, 48% branches, no threshold; auth/ at 12%> |
 | 18 | Force-push + deletion blocked on the default branch | | **High** | <not protected at all / protected but enforce_admins false> |
+| 19 | Clock faked, no fixed sleeps in tests | | Medium | <31 fixed sleeps = 48 s/run; no fake-timer tooling> |
+| 20 | No change-detector tests | | Medium | <4 snapshots over 1k lines; 6 files change in lockstep with their source> |
 
 **Answer counts:** <n> Yes · <n> Partial · <n> No · <n> Unknown · <n> N/A
 
@@ -229,6 +231,36 @@ and what was missing, and answer Unknown rather than estimating.>
 it. If the repo is unprotected, this belongs in "Today" in the sequence below regardless of what
 else the review found.>
 
+## Q19. Real time in tests — <Answer>
+
+**Suite duration:** <the measured wall-clock time, and the command> · **Fixed sleeps:** <n>
+totalling <n>s per run · **Clock-faking tooling present:** <what, or none> · **Retries
+configured:** <yes/no, and whether they exist to absorb timing flakiness>
+
+| Location | Waits | Was really waiting for | Replace with |
+|---|---|---|---|
+
+<Then: the slowest tests from the runner's own timing, so the grep is confirmed rather than
+trusted; whether production code takes the clock as a dependency at all, since that is what makes
+faking possible and the finding may belong to the source file; and, if there is expiry / TTL /
+backoff / scheduling logic with no fake clock anywhere, the statement that none of it is covered —
+cross-reference the per-file numbers in Q17.>
+
+## Q20. Change-detector tests — <Answer>
+
+| Signal | Count | Worst examples |
+|---|---|---|
+| Snapshots / golden files | <n>, largest <n> lines | |
+| Tests whose only assertions are mock calls | | |
+| Tests that compute the expected value with the code under test | | |
+| Test files changing in lockstep with their source (ratio ≈ 1.0) | | |
+
+<Lockstep ratios are candidates, not verdicts — say which ones you opened and what you found. For
+each confirmed case: what behaviour the test was meant to protect, and the assertion that would
+protect it instead. Note the ones you judged legitimate (a small reviewed snapshot, a verified
+call at a real boundary) so the reader can see the line you drew. Close with the question for the
+team: when you last refactored, how much of the diff was tests?>
+
 ---
 
 ## Recommended sequence
@@ -238,7 +270,8 @@ set enforce_admins; add the auth guard to the 4 open routes; rotate the committe
 workflow on for pull_request and mark it required; set the coverage threshold one point below
 today's measured number; commit the <n> zero-violation baseline lint rules as ratchets>
 **This week (a day or two):** <one integration test that boots the app; strict types in the api
-package; delete the dead exports knip found>
+package; replace the <n> fixed sleeps with polls and fake the clock in the expiry tests; delete the
+dead exports knip found>
 **Then (decisions, not fixes):** <split the two 1500-line modules; consolidate the duplicated
 invoice logic; retire the v1 endpoints after 30 days of 410>
 

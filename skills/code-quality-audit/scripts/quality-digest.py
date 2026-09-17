@@ -8,7 +8,7 @@ Reads the JSON written by import-graph.py, find-endpoints.py and dup-blocks.py f
 when present, and lists any tool-*.txt written by run-analyzers.sh. Pure read of local
 files; nothing is executed. Secret matches are printed redacted (first 4 chars only).
 """
-import json, os, re, sys, datetime, collections
+import json, os, re, sys, datetime, collections, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _repo_files import list_files, is_source, is_test, language_of, read_text  # noqa: E402
 
@@ -277,6 +277,131 @@ for f in src:
                 swallowed[name].append(f"{f}:{t.count(chr(10), 0, m.start()) + 1}")
 inv["swallowed_errors"] = {"counts": dict(swallow_counts), "examples": dict(swallowed)}
 
+# ---------- Q19 real time in tests · Q20 change detectors ----------
+# Durations are normalised to milliseconds so the per-run cost can be summed. Unit defaults follow
+# each API: python/ruby/shell sleep take seconds, the JS and JVM ones milliseconds.
+SLEEP_PATTERNS = [
+    ("waitForTimeout", re.compile(r"waitForTimeout\(\s*([0-9_]+)"), 1),
+    ("cy.wait(ms)", re.compile(r"cy\.wait\(\s*([0-9_]+)\s*\)"), 1),
+    ("setTimeout in a promise", re.compile(r"setTimeout\(\s*(?:resolve|res|done|r)\s*,\s*([0-9_]+)"), 1),
+    ("sleep()/delay() helper", re.compile(r"\b(?:await\s+)?(?:sleep|delay|wait)\(\s*([0-9_]+)\s*\)"), 1),
+    ("time.sleep", re.compile(r"(?:time|asyncio)\.sleep\(\s*([0-9.]+)"), 1000),
+    ("Thread.sleep", re.compile(r"Thread\.sleep\(\s*([0-9_]+)"), 1),
+    ("thread::sleep", re.compile(r"thread::sleep\(.*?([0-9_]+)"), 1),
+]
+GO_SLEEP = re.compile(r"time\.Sleep\(\s*([0-9.]*)\s*\*?\s*time\.(Nanosecond|Microsecond|Millisecond|Second|Minute)")
+GO_UNIT_MS = {"Nanosecond": 1e-6, "Microsecond": 1e-3, "Millisecond": 1, "Second": 1000, "Minute": 60000}
+FAKE_CLOCK_RE = re.compile(
+    r"useFakeTimers|advanceTimersByTime|installFakeTimers|fake-timers|sinon\.useFakeTimers|page\.clock|cy\.clock\(|"
+    r"freeze_time|freezegun|time[-_]machine|pytest[-_]freezer|MockClock|Timecop|travel_to|travel\(|"
+    r"clockwork|benbjohnson/clock|testing/synctest|synctest\.|FakeTimeProvider|TimeProvider|"
+    r"tokio::time::(?:pause|advance)|Clock\.fixed|FrozenClock|ManualClock", re.I)
+RETRY_RE = re.compile(r"\bretries\s*[:=]\s*[1-9]|--retries[= ][1-9]|rerun-?failures|reruns\s*[:=]\s*[1-9]|"
+                      r"flaky\s*[:=]\s*true|test\.retry\(|@retry\b|RetryingTest", re.I)
+CLOCK_CALL_RE = re.compile(r"Date\.now\(\)|new Date\(\s*\)|time\.time\(\)|datetime\.(?:now|utcnow)\(|"
+                           r"time\.Now\(\)|Instant\.now\(|DateTime\.(?:Now|UtcNow)|Time\.now\b|SystemTime::now")
+# No \b anchors: these appear as BACKOFF_SECONDS, is_expired, cacheAge — an underscore is a word
+# character, so a trailing \b would miss exactly the spellings this needs to catch.
+TIME_BEHAVIOUR_RE = re.compile(r"(?i)(expir|\bttl\b|ttl[_A-Z]|backoff|back_off|debounc|throttl|schedul|cron|"
+                               r"rate[_ -]?limit|session[_ -]?timeout|cache[_ -]?age|retry_?(after|delay|interval))")
+
+sleeps = []
+for f in test_files:
+    t = T(f)
+    for name, rx, mult in SLEEP_PATTERNS:
+        for m in rx.finditer(t):
+            try: val = float(m.group(1).replace("_", ""))
+            except ValueError: continue
+            ms = val * mult
+            if ms < 25:      # a 0-10ms yield is not a wait for real-world time
+                continue
+            sleeps.append({"file": f, "line": t.count("\n", 0, m.start()) + 1, "kind": name, "ms": int(ms)})
+    for m in GO_SLEEP.finditer(t):
+        n = float(m.group(1).replace("_", "")) if m.group(1) else 1.0
+        sleeps.append({"file": f, "line": t.count("\n", 0, m.start()) + 1, "kind": "time.Sleep",
+                       "ms": int(n * GO_UNIT_MS[m.group(2)])})
+sleeps.sort(key=lambda x: -x["ms"])
+fake_clock = sorted({f for f in files if FAKE_CLOCK_RE.search(T(f))})
+retries = [f"{f}:{T(f).count(chr(10), 0, m.start()) + 1}" for f in files if not is_test(f) or True
+           for m in [RETRY_RE.search(T(f))] if m][:12]
+prod_src = [f for f in src if not is_test(f)]
+clock_calls = sum(len(CLOCK_CALL_RE.findall(T(f))) for f in prod_src)
+clock_files = [f for f in prod_src if CLOCK_CALL_RE.search(T(f))]
+time_behaviour = sorted({f for f in prod_src if TIME_BEHAVIOUR_RE.search(T(f))})
+inv["real_time_in_tests"] = {
+    "fixed_sleeps": len(sleeps), "total_ms_per_run": sum(x["ms"] for x in sleeps),
+    "worst": sleeps[:20], "by_kind": dict(collections.Counter(x["kind"] for x in sleeps)),
+    "fake_clock_tooling_files": fake_clock, "retry_config": retries,
+    "direct_clock_calls_in_source": clock_calls, "source_files_calling_the_clock": clock_files[:20],
+    "source_files_with_time_dependent_behaviour": time_behaviour[:25]}
+
+# --- Q20 change detectors
+SNAP_FILE_RE = re.compile(r"(^|/)__snapshots__/|\.snap$|(^|/)(__file_snapshots__|snapshots)/|\.approved\.|\.golden$|(^|/)testdata/.*\.(golden|json|txt)$")
+# `.snap` is on the generated-file exclude list that keeps line counts honest, so snapshots are not
+# in `files` at all. For this question they ARE the evidence, so ask git for them directly.
+_all_tracked = subprocess.run(["git", "-C", root, "ls-files", "-z"], capture_output=True)
+_tracked = [x for x in _all_tracked.stdout.decode("utf-8", "replace").split("\0") if x] if _all_tracked.returncode == 0 else files
+snap_files = [f for f in _tracked if SNAP_FILE_RE.search(f) and "node_modules" not in f]
+def _lines(rel):
+    try:
+        with open(os.path.join(root, rel), "rb") as fh:
+            return fh.read().count(b"\n") + 1
+    except OSError:
+        return 0
+snap_sizes = sorted(((f, _lines(f)) for f in snap_files), key=lambda x: -x[1])
+inline_snaps = sum(len(re.findall(r"toMatchInlineSnapshot|toMatchSnapshot|assert_match_snapshot|"
+                                  r"snapshot\(|Approvals\.|verify\(.*golden", T(f))) for f in test_files)
+update_habit = []
+for k, v in pkg_scripts.items():
+    if re.search(r"(-u\b|--update-snapshots?|--snapshot-update|UPDATE_SNAPSHOTS|--approve)", v):
+        update_habit.append(f"{k}: {v[:80]}")
+for wf in ci["github_workflows"] + ci["other"]:
+    if re.search(r"(-u\b|--update-snapshots?|--snapshot-update)", T(wf)):
+        update_habit.append(f"{wf}: CI regenerates snapshots")
+MOCK_ASSERT_RE = re.compile(r"toHaveBeenCalled|toBeCalled|assert_called|assert_has_calls|"
+                            r"sinon\.assert|verify\(|\.received\(|Mockito\.verify|mock_calls", re.I)
+OUTCOME_ASSERT_RE = re.compile(r"toEqual|toBe\(|toStrictEqual|toMatchObject|assertEqual|assert\s+\w+\s*==|"
+                               r"expect\(.*\)\.to(?!HaveBeenCalled)|assert\.(Equal|True|NoError)|should\s*==|"
+                               r"assertThat", re.I)
+mock_only = []
+for f in test_files:
+    t = T(f)
+    m_calls = len(MOCK_ASSERT_RE.findall(t)); o_calls = len(OUTCOME_ASSERT_RE.findall(t))
+    if m_calls >= 3 and o_calls <= max(1, m_calls // 6):
+        mock_only.append({"file": f, "mock_assertions": m_calls, "outcome_assertions": o_calls})
+mock_only.sort(key=lambda x: -x["mock_assertions"])
+
+# lockstep churn: how often a test file changes in the same commit as the source it covers
+def commits_for(path):
+    r = subprocess.run(["git", "-C", root, "log", "--format=%H", "--", path], capture_output=True, text=True)
+    return set(r.stdout.split()) if r.returncode == 0 else set()
+lockstep = []
+src_by_stem = {}
+for f in prod_src:
+    src_by_stem.setdefault(re.sub(r"\.\w+$", "", f.rsplit("/", 1)[-1]).lower(), []).append(f)
+for tf in test_files:
+    stem = re.sub(r"\.(test|spec)\b.*$|\.\w+$", "", tf.rsplit("/", 1)[-1], flags=re.I).lower()
+    stem = re.sub(r"^test_", "", stem)
+    cands = src_by_stem.get(stem) or []
+    if len(cands) != 1:
+        continue
+    sf = cands[0]
+    tc, sc = commits_for(tf), commits_for(sf)
+    if len(sc) < 4:
+        continue
+    both = len(tc & sc)
+    ratio = both / len(sc)
+    if ratio >= 0.6:
+        lockstep.append({"test": tf, "source": sf, "source_commits": len(sc), "together": both,
+                         "ratio": round(ratio, 2),
+                         "has_snapshot_or_mock": bool(re.search(r"toMatchSnapshot|toMatchInlineSnapshot", T(tf))) or
+                                                any(x["file"] == tf for x in mock_only)})
+lockstep.sort(key=lambda x: (-x["ratio"], -x["source_commits"]))
+inv["change_detectors"] = {
+    "snapshot_files": len(snap_files), "largest_snapshots": snap_sizes[:10],
+    "snapshot_assertions_in_tests": inline_snaps, "update_snapshot_habit": update_habit,
+    "mock_assertion_heavy_files": mock_only[:15], "lockstep_candidates": lockstep[:15]}
+
 # ---------- Q2 dead-code signals ----------
 todo = collections.Counter(); todo_files = collections.Counter()
 commented_code = []
@@ -380,7 +505,7 @@ with open(os.path.join(out, "inventory.json"), "w") as fh:
 
 # ---------- DIGEST.md ----------
 md = [f"# Code quality inventory — `{root}` — {inv['date']}", "",
-      "Mechanical evidence for the eighteen questions in `references/quality-checklist.md`. Every line here is a pointer: open the file before you cite it. "
+      "Mechanical evidence for the twenty questions in `references/quality-checklist.md`. Every line here is a pointer: open the file before you cite it. "
       "Suggested answers are mechanical and can be wrong in both directions.", ""]
 def sec(t): md.extend(["", f"## {t}", ""])
 def yesno(b): return "yes" if b else "NO"
@@ -566,6 +691,47 @@ if isinstance(rs, list):
     if rs:
         md.append("  - Read each ruleset's `rules[].type` for `non_fast_forward` (the force-push block) and `deletion`, and its `bypass_actors` — a standing bypass makes the rule decorative for those actors.")
 md.append("- Also worth asking, outside this repo: can org members delete repositories, and does a second copy of this history exist anywhere?")
+
+sec("Q19. Tests do not wait on real-world time; the clock is faked (recommended: yes)")
+rt = inv["real_time_in_tests"]
+tot = rt["total_ms_per_run"]
+md.append(f"- **Fixed sleeps in tests: {rt['fixed_sleeps']}**, totalling **{tot/1000:.1f} s per run** "
+          f"({rt['by_kind'] or 'none'})")
+for x in rt["worst"][:12]:
+    md.append(f"  - {x['ms']:>6} ms  {x['file']}:{x['line']}  ({x['kind']})")
+md.append(f"- Clock-faking tooling seen in: {', '.join(rt['fake_clock_tooling_files'][:8]) or '**nowhere in the repo**'}")
+if rt["retry_config"]:
+    md.append(f"- Retry configuration present ({len(rt['retry_config'])} site(s)): {', '.join(rt['retry_config'][:6])} — check whether it exists to absorb timing flakiness")
+md.append(f"- Source files calling the clock directly: **{len(rt['source_files_calling_the_clock'])}** ({rt['direct_clock_calls_in_source']} calls) — time cannot be faked where it is not injected")
+if rt["source_files_with_time_dependent_behaviour"] and not rt["fake_clock_tooling_files"]:
+    md.append("- **Time-dependent behaviour with no clock-faking anywhere** — expiry/TTL/backoff/scheduling logic in "
+              + ", ".join(rt["source_files_with_time_dependent_behaviour"][:8])
+              + ". Nobody tests a 30-day expiry by waiting, so check whether these paths are tested at all (cross-reference Q17 per-file numbers).")
+md.append("- A poll with a deadline is **not** a finding; only a fixed duration is. Confirm the list above against the runner's own slowest-test output before reporting it.")
+
+sec("Q20. No change-detector tests (recommended: none)")
+cd_ = inv["change_detectors"]
+md.append(f"- Snapshot / golden files: **{cd_['snapshot_files']}** · snapshot assertions in tests: {cd_['snapshot_assertions_in_tests']}")
+for f, n in cd_["largest_snapshots"][:8]:
+    md.append(f"  - {n:>6} lines  {f}" + ("   ← nobody reads a diff this size" if n > 300 else ""))
+if cd_["update_snapshot_habit"]:
+    md.append("- **Snapshots are regenerated by a script or CI** (approval by regeneration, not review): " + "; ".join(cd_["update_snapshot_habit"][:5]))
+if cd_["mock_assertion_heavy_files"]:
+    md.append("- Test files whose assertions are mostly about **calls rather than outcomes**:")
+    for x in cd_["mock_assertion_heavy_files"][:8]:
+        md.append(f"  - {x['file']}: {x['mock_assertions']} mock assertions vs {x['outcome_assertions']} outcome assertions")
+else:
+    md.append("- No test file is dominated by mock-call assertions.")
+if cd_["lockstep_candidates"]:
+    md.append("- **Lockstep churn** — test files changing in the same commits as the source they cover. A test coupled to behaviour changes rarely; one coupled to implementation changes every time. Candidates, not verdicts: open them before calling it.")
+    md.append("")
+    md.append("| Test | Source | Source commits | Changed together | Ratio | Snapshot/mock |")
+    md.append("|---|---|---|---|---|---|")
+    for x in cd_["lockstep_candidates"][:10]:
+        md.append(f"| {x['test']} | {x['source']} | {x['source_commits']} | {x['together']} | **{x['ratio']}** | {'yes' if x['has_snapshot_or_mock'] else 'no'} |")
+else:
+    md.append("- Lockstep churn: no test/source pair changes together in 60%+ of the source's commits (or the history is too short to tell).")
+md.append("- The shape no tool finds: a test that computes its expected value with the code under test. Read the largest test files for that.")
 
 sec("Analyzer outputs present")
 md.append(", ".join(f"`{t}`" for t in tools) if tools else "none — run `scripts/run-analyzers.sh --repo <repo> --out <out>` for eslint/tsc/mypy/ruff/knip/vulture/jscpd/madge/audit output.")

@@ -1,4 +1,4 @@
-# Code quality checklist — the eighteen questions, how to answer each, and what "good" looks like
+# Code quality checklist — the twenty questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -7,6 +7,13 @@ have let you verify it.
 Sources, by trust: a tool's output on non-vendored code → a command you ran (`git grep -c`,
 `wc -l`) → reading the file → the config file's claim → what the user told you → your
 impression of the code (label these, or leave them out).
+
+**Altitude.** You already know each language's linters, test runners, coverage tools and clock
+libraries; this file does not re-teach them. It carries what is easy to get wrong instead: which
+patterns are false positives, where the honest threshold sits, what a number has to exclude before
+it means anything, and which findings are candidates rather than verdicts. Where a command appears
+it is because the exact flag or API field matters, not as a substitute for knowing the ecosystem.
+Reach for the tool you know for the stack in front of you.
 
 **Exclude from every count**: `node_modules`, `vendor`, `dist`, `build`, `out`, `.next`,
 `coverage`, `.venv`, `venv`, `target`, `__pycache__`, `Pods`, migrations you did not write,
@@ -17,7 +24,7 @@ Contents: Q1 Lint + type checker · Q2 Dead code · Q3 Endpoint auth · Q4 Dead 
 Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types · Q10 CI gates ·
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
 Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
-Q18 Force-push and deletion blocked
+Q18 Force-push and deletion blocked · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests
 
 ---
 
@@ -293,9 +300,10 @@ where a bug costs something. The shape matters more than the count:
   the clock, then asserts the mock was called, passes forever regardless of the code.
 - Is the **money / auth / migration / permission** logic tested? That is where the value is.
 - Are there **edge cases and failure paths**, or only the happy path?
-- Are they **deterministic** — no `sleep`, no real clock, no shared mutable fixture, no order
-  dependence? Check for `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip` and count them;
-  a suite with 40 skipped tests is a suite with 40 known-broken tests.
+- Are they **deterministic** — no shared mutable fixture, no order dependence? Check for `.skip`,
+  `.only`, `xit`, `@pytest.mark.skip`, `t.Skip` and count them; a suite with 40 skipped tests is a
+  suite with 40 known-broken tests. Waiting on real time is **Q19**.
+- Do they assert behaviour, or only that the code still looks like itself? That is **Q20**.
 - Coverage is **Q17**, which has a hard recommended floor of 80% on lines and branches and asks
   whether a threshold enforces it. Answer this question on whether the tests exist, pass, and
   test behaviour; answer the percentage there.
@@ -929,3 +937,110 @@ solo-committing directly to the default branch is the actual workflow, block for
 deletion and leave the review requirement off, rather than skipping protection altogether because
 the review rule felt heavy. Those two settings are the ones that preserve the code, and they cost
 nothing to have on.
+
+## Q19. Do tests wait on real-world time, or is the clock faked? (recommended: faked — no fixed sleeps)
+
+A test that sleeps for two seconds costs two seconds on every run forever, and it is *also* flaky,
+because the duration is a guess about how fast someone else's CI runner will be on a bad day. Too
+short and it fails intermittently; long enough to be safe and the suite crawls. One fix solves
+both: make time something the test controls.
+
+The distinction that matters, because a grep for "timeout" lumps all three together and only one
+is a finding:
+
+| Pattern | Verdict |
+|---|---|
+| **Fixed sleep** — sleeping a hard-coded duration and hoping the thing happened | **finding**: pays the full cost every run and still races on a slow machine |
+| **Polling with a deadline** — waiting on a condition with a timeout as the upper bound | fine: returns the moment the condition holds. A 10-second poll is not slow |
+| **Faked clock** — advancing time programmatically | preferred: a 30-day expiry test runs in a millisecond |
+
+Find every fixed sleep and **add up what they cost**. "31 fixed sleeps totalling 48 seconds per
+run" is a finding a team acts on; "some tests sleep" is not. Confirm it against the suite's own
+slowest-test output rather than the grep alone, since one framework-level timeout can dominate
+everything the grep found.
+
+Then the half of this question that is about production code, and the reason it usually goes
+unfixed: **you can only fake time if the code takes time as a dependency.** Something calling the
+system clock directly several layers down, or a retry helper with a hard-coded backoff and no
+injectable delay, cannot be tested at any speed without global monkey-patching. When tests sleep,
+check whether they sleep because nobody injected a clock — the finding then belongs to the source
+file, not the test.
+
+Also watch for the failure mode that looks like success: a suite that is fast **because the
+time-dependent behaviour is not tested at all**. Nobody tests a 30-day expiry by waiting 30 days,
+so without a fake clock that path simply has no test. If the repo has expiry, TTL, backoff,
+scheduling, debounce, rate-limit windows or session timeouts and no clock-faking tooling anywhere,
+the honest finding is that none of it is covered — and it will show up as a hole in Q17's per-file
+numbers rather than as a slow suite.
+
+Last, check whether retries are configured. A retry count that exists to absorb timing flakiness
+is the suite telling you about this problem in its own words.
+
+What good looks like: no fixed sleeps; waiting expressed as polling on a condition; the clock
+injected in production code and faked in tests, so expiry, backoff and scheduling logic are tested
+exhaustively in milliseconds; no retry configuration compensating for timing.
+
+The fix, cheapest first: replace each fixed sleep with a poll on the condition it was really
+waiting for. That is usually a one-line change and it makes the test faster *and* more reliable at
+once, which is a rare combination worth leading with. Then, for genuinely time-dependent
+behaviour, inject the clock at the boundary that owns it and fake it in the test — every mainstream
+stack has a supported way to do this, including fake timers in the JS test runners, freezing
+libraries in Python, an injected clock interface in Go, and `TimeProvider` in .NET. Do the slowest
+test first and report the seconds saved: a suite dropping from four minutes to forty changes how
+often people run it, which is worth more than the time itself.
+
+## Q20. Are there change-detector tests? (recommended: no)
+
+A change-detector test fails whenever the implementation changes and passes whenever it does not,
+regardless of whether the behaviour is still correct. It is the worst trade in a test suite: it
+charges maintenance on every refactor and buys no confidence, so it makes the code harder to
+change while making nobody safer. The name comes from Google's 2015 "Testing on the Toilet" note
+of the same title.
+
+Three shapes, in the order you will find them:
+
+1. **The test restates the implementation.** The expected value is computed by the same logic, the
+   same constant table, or the same helper that production code uses — so the assertion is
+   `f(x) == f(x)` with extra steps, and it cannot fail for the reason you care about. This is the
+   shape from the original article and the hardest to spot with a grep: look for a test that
+   imports the module under test and then uses it to build the value it asserts against, or that
+   mirrors the production branching arm for arm.
+2. **The assertion is an undifferentiated blob.** A snapshot or golden file large enough that
+   nobody reads the diff, so any change is approved by regenerating it. A small, reviewed snapshot
+   of one component is a legitimate test; a 4,000-line snapshot of a whole page is a change
+   detector with a nicer name. Size and reviewability are what separate them, so report the count
+   of snapshots, the largest ones, and whether the scripts or CI regenerate them with an update
+   flag as a habit.
+3. **The assertion is about calls, not outcomes.** A test whose only assertions are that mocks
+   were called, in an order, with exact arguments, is pinned to the current call graph rather than
+   to behaviour. Verifying a call *is* right when the call is the observable contract at a
+   boundary you own — "an email was sent to this address" is real — but a verification of an
+   internal collaborator is just the implementation written twice.
+
+The strongest mechanical signal is **lockstep churn**: a test file that changes in nearly every
+commit that touches its source file. A test coupled to behaviour changes when the behaviour
+changes, which is much rarer than the implementation changing. Compute the ratio from the git
+history — commits touching both, over commits touching the source — and treat anything near 1.0 as
+a candidate worth opening, especially if the file also carries snapshots or mock verification. It
+is a candidate rather than a verdict: a file under active feature development legitimately moves
+together with its tests, so read the commits before calling it.
+
+Why this matters more than it sounds: these tests are the main reason a team stops refactoring.
+Every cleanup turns into a second, larger diff in the test suite, the review gets harder, and the
+rational response is to leave the code alone. A suite of change detectors also reports a healthy
+Q17 number while catching nothing, which is why this question and the coverage question have to be
+read together.
+
+What good looks like: tests assert observable behaviour — a return value, a state change, a
+message sent — against expected values a human wrote down; snapshots are small, few, and reviewed
+in the diff; mock verification appears only at real boundaries; and a refactor that preserves
+behaviour leaves the test suite untouched. That last sentence is the whole test for this question,
+and it is worth asking the team directly: when you last restructured something, how much of the
+diff was tests?
+
+The fix, per test: work out what observable behaviour it was meant to protect and assert that
+instead, with a hand-written expected value. Shrink an oversized snapshot to the fields that
+actually matter rather than deleting the test. Replace call verification with an assertion about
+the outcome the call produces. Where a test protects nothing but the current shape of the code,
+delete it — an empty slot is more honest than a test that must be edited to make any change, and
+coverage lost this way is coverage that was never real.
