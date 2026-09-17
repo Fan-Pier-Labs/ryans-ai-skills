@@ -83,5 +83,6 @@ echo "== digest =="
 python3 "$HERE/quality-digest.py" "$REPO" "$OUT"
 echo
 echo "Read $OUT/DIGEST.md first; the JSON and tool-*.txt next to it are the evidence."
-echo "Q17 (the coverage %) still needs the suite run with coverage on, and Q18 needs each ruleset's"
-echo "rules[].type and bypass_actors read — both are in references/quality-checklist.md."
+echo "Q17 (the coverage %) still needs the suite run with coverage on, Q18 needs each ruleset's"
+echo "rules[].type and bypass_actors read, and every Q22 row is a lead that needs the file opened"
+echo "and the false-positive list worked — all three are in references/quality-checklist.md."

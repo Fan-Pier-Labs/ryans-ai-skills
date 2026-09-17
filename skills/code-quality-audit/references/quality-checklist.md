@@ -1,4 +1,4 @@
-# Code quality checklist — the twenty-one questions, how to answer each, and what "good" looks like
+# Code quality checklist — the twenty-two questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -25,7 +25,7 @@ Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
 Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
 Q18 Force-push blocked on every branch · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests ·
-Q21 Baseline TypeScript compiler-check coverage
+Q21 Baseline TypeScript compiler-check coverage · Q22 Not re-implementing what a library solves
 
 ---
 
@@ -1221,3 +1221,135 @@ Where a flag's count is genuinely too large for one sitting, scope it (a second 
 directories that pass, or the flag on with an `exclude`) with a comment saying why and a tracking
 issue — never leave it off silently. `enable-more-lint-or-ts-checks` is this whole loop as a
 skill; hand it this file and the per-flag counts.
+
+---
+
+## Q22. Is the codebase re-implementing something a library already solves? (recommended: no)
+
+Somewhere in most codebases is a function that parses CSV by splitting on commas, adds a day by
+adding `86400000`, validates an email with a regex, or hashes a password with SHA-1 and a
+homegrown salt. Each one looks small and reads fine. The cost is never the lines you can see: it
+is the edge cases the author has not hit yet — the quoted field with an embedded newline, the DST
+transition where a day is 23 hours, the plus-addressed and the unicode mailbox, the timing attack.
+A library is those same lines plus a decade of other people's bug reports, and the reason to
+prefer it is that the bug reports have already happened to someone else.
+
+**Judge on edge cases, not on line count.** "It's only 200 lines" is the wrong axis: 200 lines of
+hand-rolled CSV splitting is a smaller file and a much larger liability than `import csv`.
+
+### Where hand-rolling is almost always wrong
+
+| Domain | What the hand-rolled version gets wrong | Severity when found |
+|---|---|---|
+| **Crypto**: encryption, password hashing, signing, token generation | ECB or a reused IV, `Math.random()` as entropy, a fast hash instead of a KDF, comparison that leaks timing | 🔴 Critical |
+| **Auth protocol**: JWT verification, OAuth/OIDC/SAML flows, session cookies | `alg: none`, signature checked but `exp`/`aud`/`iss` not, decode mistaken for verify, no state/PKCE | 🔴 Critical |
+| **HTML / SQL / shell escaping and sanitization** | An allowlist regex that misses one vector; escaping applied in the wrong order or twice | 🔴 Critical |
+| **Dates, times, timezones, durations** | DST (a day is not always 86,400 s), month-end arithmetic, leap years, parsing a naive string as UTC | 🟠 High |
+| **Money and decimals** | Floats for cents; rounding that does not match the ledger or the tax rule | 🟠 High |
+| **Parsers of a format someone else specified**: CSV, YAML/TOML/INI, XML/HTML, email addresses, URLs, query strings, semver, cron, MIME, globs, phone numbers | The quoted field, the escape, the nested case — every one of these formats is harder than its examples | 🟠 High |
+| **Retry / backoff / circuit breakers / rate limiting / concurrency pools** | No jitter (synchronized retry storms), retrying non-idempotent calls, unbounded queues | 🟡 Medium |
+| **Caching with TTL or eviction** | No bound, no stampede protection, a leak that only shows in production | 🟡 Medium |
+| **Unicode work**: slugify, case folding, display width, normalization | Anything outside ASCII | 🟡 Medium |
+| **Structural utilities**: deep equal, deep clone, deep merge, debounce/throttle, UUIDs | Cycles, `Date`/`Map`/`Set`/`undefined`, prototype pollution, `JSON.parse(JSON.stringify(x))` silently dropping fields | 🟡 Medium |
+| **Large subsystems**: ORM / query builder / migrations, job queue, DI container, template engine, state machine, PDF or spreadsheet generation, text diffing | These are products. A homegrown one is a second product the team now maintains instead of theirs | 🟡 Medium–High, by how much rides on it |
+
+### The four shapes, strongest finding first
+
+1. **The library is already a dependency and the hand-rolled version exists anyway.** The repo
+   pays the install size, the audit surface and the upgrade work for a package, and the code
+   calls a homegrown copy instead — usually the copy without tests. Check the manifest *before*
+   writing any finding in this question: `date-fns` in `package.json` next to a `addDays()` built
+   on `86400000` is the cheapest fix in the whole review and the easiest to defend.
+2. **Vendored or copy-pasted library code.** A `vendor/`, `third_party/` or `lib/external/` tree,
+   or a file whose header says "adapted from https://github.com/…". This is a fork nobody will
+   update: it misses every security patch silently, and no `npm audit` or Dependabot alert will
+   ever mention it. Ask whether it was modified at all — if it was not, it is a dependency
+   installed the wrong way, and the fix is one line in the manifest.
+3. **A hand-rolled implementation with no equivalent dependency present.** The ordinary case.
+   Name the library, check it (below), and rank by the severity table.
+4. **The inverse: a dependency for something trivial.** Same question, same axis. A package whose
+   whole body is `n % 2 === 1` is supply-chain surface for nothing; a 300 KB date library imported
+   for one `format()` call is bundle weight for nothing; adopting a framework to avoid forty lines
+   is a migration the team now owns. Report these here, because both answers come from the same
+   judgment call and a review that only ever says "add a dependency" is not making one.
+
+### Detecting it
+
+The digest's Q22 section pairs a per-domain signal against the dependency list and flags the
+overlaps, which is shape 1. Everything else needs reading. The high-signal greps, as leads rather
+than findings:
+
+```bash
+git grep -nE '86400000|1000 ?\* ?60 ?\* ?60 ?\* ?24|24 ?\* ?60 ?\* ?60'   # date arithmetic in ms
+git grep -nE 'createCipher\(|createDecipheriv?\(|Math\.random\(\).{0,40}(token|key|id|secret|salt)'
+git grep -niE '(md5|sha-?1)\b.{0,60}(password|passwd|pwd|secret)'          # a fast hash as a KDF
+git grep -nE "\.split\(['\"],['\"]\)" -- '*csv*' '*import*' '*export*'     # CSV by comma
+git grep -nE '[A-Za-z0-9._%+-]\+@\[A-Za-z0-9' ; git grep -nE '@.*\\\.\[a-z\]'  # email regexes
+git grep -nE 'atob\(|Buffer\.from\([^)]*base64.{0,40}split\(' -- '*jwt*' '*auth*' '*token*'
+git grep -nE 'JSON\.parse\(JSON\.stringify\('                             # deep clone
+git grep -nE 'replace\(/&/g' ; git grep -nE '&lt;|&amp;.{0,20}replace'    # hand escaping
+git grep -nE 'while ?\(.{0,30}(attempt|retries|tries)|for ?\(.{0,20}attempt'   # retry loops
+git grep -nE 'process\.argv|sys\.argv' -- '*cli*' '*bin*'                 # argument parsing
+```
+
+Then the other half, which the greps cannot do: read the dependency manifest and ask, for each
+homegrown utility module in the repo (`utils/`, `lib/`, `helpers/`, `common/` are where they
+live), whether it is solving a problem specific to this product or a problem the world already
+solved. A utility file's imports tell you which: one that imports nothing and is full of string
+and date manipulation is the candidate.
+
+For shape 2, `vendor/`, `third_party/` and `external/` are excluded from every other count in this
+review (so the line and duplication numbers stay honest), so look at them explicitly:
+`git ls-files | grep -E '(^|/)(vendor|third_party|thirdparty|external|lib/vendor)/'`, plus
+`git grep -nliE 'copied from|adapted from|based on (the )?https?://|originally from|forked from'`.
+
+### False positives — check every one of these before writing a finding
+
+- **A thin wrapper around a library is not reinvention.** It is the seam that lets the library be
+  replaced. `formatMoney()` calling `Intl.NumberFormat` is good structure.
+- **A small helper that is exactly what this domain needs**, with tests, can be cheaper than a
+  dependency. The question is whether the problem has edge cases, not whether code exists.
+- **The runtime may already ship it.** `crypto.randomUUID`, `structuredClone`, `URL` /
+  `URLSearchParams`, `Intl`, `Temporal`, `AbortSignal.timeout`, `Object.groupBy`, and in Python
+  `zoneinfo`, `secrets`, `tomllib`, `dataclasses`. Recommending a package for something the
+  language now has is the same mistake from the other side — check the runtime version in
+  `engines` / `python_requires` / `go.mod` before naming one.
+- **A deliberate no-dependency policy**, in an ADR, `CONTRIBUTING.md`, or a comment on the file.
+  Common and legitimate for a published library, an edge/serverless bundle with a size ceiling, an
+  embedded target, an air-gapped build, or a licence policy. Report it as a documented decision and
+  score the question against the policy, not against your preference.
+- **They tried the library and it did not fit.** Look for a removed dependency in the history
+  (`git log -S'<package>' -- package.json`) or a comment saying why. That is an answered question,
+  not an open one.
+- **The reinvention is the product.** Do not tell a company whose product is a parser to use a
+  parsing library.
+
+### What good looks like
+
+Solved problems are solved by a maintained dependency; the homegrown code in the repo is the part
+that is actually about this business. Each dependency is there for a reason bigger than one
+function. Nothing is vendored except with a written reason and a plan to re-sync. Where a library
+was deliberately not used, the file says so and says what it would have cost.
+
+### The fix
+
+Per finding, and **do not batch them** — replacing hand-rolled crypto is a security fix that wants
+its own reviewed PR; replacing a deep-clone helper is a cleanup.
+
+1. **Shape 1 first** (library already installed): mechanical swap, usually an afternoon, and the
+   argument is already won.
+2. **Then by the severity table.** Crypto, auth-protocol and sanitization findings are 🔴 and
+   belong in "Today" — the hand-rolled version is not tech debt, it is the vulnerability.
+3. **Check the library before recommending it**: last release, open-issue trend, maintainer count,
+   downloads, licence, transitive dependency count, and bundle size if it ships to a browser.
+   Swapping working homegrown code for an abandoned package with forty transitive dependencies is
+   a worse trade than leaving it alone, and a review that names a package without this check has
+   not finished the recommendation.
+4. **Keep the hand-rolled version's tests and run them against the library.** They are the
+   written-down spec of what this codebase actually needs, and the ones that now fail are exactly
+   the behaviour differences to decide about — which is also how you find out the old code had a
+   bug. Where there are no tests, write two or three characterization tests before the swap.
+5. **For a vendored copy**: diff it against the upstream version it came from. Unmodified means
+   delete the tree and add the dependency. Modified means the diff is the real decision — upstream
+   it, or record it as an owned fork with the version it forked from and who watches upstream's
+   advisories.

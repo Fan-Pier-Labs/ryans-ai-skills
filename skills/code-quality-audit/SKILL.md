@@ -1,13 +1,13 @@
 ---
 name: code-quality-audit
-description: Review a whole repository's code quality against twenty-one concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, what percent of a baseline set of TypeScript compiler checks is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, and are there change-detector tests — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, whether strict mode or stricter TypeScript compiler options are on (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride and the rest), test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, or which eslint rules or tsconfig options they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
+description: Review a whole repository's code quality against twenty-two concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, what percent of a baseline set of TypeScript compiler checks is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, are there change-detector tests, and is the codebase re-implementing something a well-maintained library already solves — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, whether strict mode or stricter TypeScript compiler options are on (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride and the rest), test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, hand-rolled code for a solved problem ("are we reinventing the wheel", "should this be a library", homegrown crypto, date math, CSV parsing, retry logic), or which eslint rules or tsconfig options they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
 ---
 
 # Repo Code Review
 
 The question is not "is this diff good" (that is `auto-reviewer`, which reviews one PR at a
 time). It is: **is this codebase one a team can keep working in, and what would a careful
-senior engineer flag on day one?** Twenty-one questions, each with a recommended answer. The
+senior engineer flag on day one?** Twenty-two questions, each with a recommended answer. The
 report is a scorecard with evidence a founder can hand to a new engineering lead, or a buyer
 can use in technical due diligence.
 
@@ -34,10 +34,13 @@ can use in technical due diligence.
 | 19 | Do tests **wait on real-world time**, or is the clock faked? | Faked — no fixed sleeps |
 | 20 | Are there **change-detector tests** (fail on any change, prove nothing)? | No |
 | 21 | What percent of the **baseline TypeScript compiler checks** are enabled? (TS) | 100% |
+| 22 | Is the codebase **re-implementing what a library solves** (or depending on one for something trivial)? | No |
 
 `references/quality-checklist.md` has, for each question: how to detect it in each language
 (with the exact commands), why it matters, what good looks like, and the fix. Questions 3 and 4
-have the most detection detail because they are the ones a model gets wrong most often.
+have the most detection detail because they are the ones a model gets wrong most often; Q22
+carries the longest false-positive list, because it is the one where a confident wrong answer
+costs the team a migration.
 
 Two questions are scored against a vendored baseline rather than judged. **Q16** uses
 `references/eslint-baseline.config.mjs`, a 105-rule flat config from a production TypeScript
@@ -65,7 +68,9 @@ TypeScript, has tests", and miss that `strict` is `false` so the types are decor
 `npm test` runs four tests against a mocked client and nothing else, that the linter is
 installed but wired to no script and no CI job, that three route files export handlers nobody
 mounts, that `/api/admin/export` has no auth check because the middleware is applied to a
-sibling router, and that the same 40-line invoice calculation exists in four files.
+sibling router, that the same 40-line invoice calculation exists in four files, and that
+`utils/date.ts` adds a month by adding thirty days while `date-fns` sits unused in
+`package.json`.
 
 Every one of those is mechanically detectable. The rules below force you to look for each one
 explicitly and write down **Yes / No / Partial / Unknown** so nothing is skipped quietly, and
@@ -123,13 +128,14 @@ scripts/repo-inventory.sh --repo <repo> --out <scratch dir>     # read-only; --n
 
 It writes `DIGEST.md` plus the JSON behind it: the import graph and its cycles (Q8), every
 HTTP endpoint with its visible auth status and whether anything references it (Q3/Q4),
-duplicate blocks (Q5), test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
+duplicate blocks (Q5), hand-rolled implementations paired against the dependency list (Q22),
+test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
 the output of whichever analyzers are already installed (`run-analyzers.sh` never installs
 anything and never passes `--fix`). Read `DIGEST.md` first. Every line in it is a pointer,
 not a verdict: open the file before you cite it. The output directory must be outside the
 repo or gitignored.
 
-### 3. Answer the twenty-one questions
+### 3. Answer the twenty-two questions
 
 Work through `references/quality-checklist.md` in order. For each question write:
 
@@ -192,6 +198,10 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
 - Open the two or three largest test files and ask what breaks them. A test that has to change
   whenever the implementation changes is Q20's finding, and it is only visible by reading; no tool
   reports it. The git history's lockstep ratio tells you which files to open first.
+- Read the repo's utility modules (`utils/`, `lib/`, `helpers/`, `common/`) with Q22 in mind:
+  a file that imports nothing and is full of date, string, money or parsing code is where
+  reinvention lives. Check the dependency manifest before writing the finding — a library that is
+  already installed and going unused is a different, much cheaper finding than one that is not.
 - For every dead-code candidate, check the ways a framework calls code without an import:
   route decorators, DI containers, CLI entry points in `pyproject.toml` /
   `package.json#bin`, Django `settings`, template references, reflection, dynamic
@@ -200,7 +210,7 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
 
 ### 6. Write the report
 
-Use `references/report-template.md`: summary → scorecard (all twenty-one rows, always) → one
+Use `references/report-template.md`: summary → scorecard (all twenty-two rows, always) → one
 section per question → the top findings ranked by severity → a recommended sequence → method
 and caveats. Lead with the worst thing. A "Yes, verified" is one line; do not pad it. A "No"
 without a fix, or a fix without the command, is not finished.
@@ -209,7 +219,7 @@ Severity, applied consistently:
 
 | Severity | Meaning |
 |---|---|
-| 🔴 Critical | Live exposure or data loss: an unauthenticated endpoint that reads or writes user data, a committed live credential, no backups of anything the code is the only copy of. |
+| 🔴 Critical | Live exposure or data loss: an unauthenticated endpoint that reads or writes user data, a committed live credential, hand-rolled crypto / password hashing / JWT verification / HTML sanitization on a live path, no backups of anything the code is the only copy of. |
 | 🟠 High | The team will hit this soon and it will hurt: no tests around money or auth, no CI gate, an unprotected default branch anyone can force-push, types disabled, a circular core that makes every change risky. |
 | 🟡 Medium | Real maintenance cost: duplication, dead code, oversized files, swallowed errors, missing lint rules. |
 | 🟢 Low / Good | Nits, and things that are genuinely fine. Say what is good, but only what is earned. |
@@ -258,6 +268,10 @@ that change and nothing else. Never batch fixes across questions.
 | "Snapshots are tests, so coverage is real." | A snapshot nobody reads is approved by regenerating it. Report snapshot count and size, and whether the scripts update them as a habit (Q20). |
 | "The mock was asserted, so the behaviour is tested." | Verifying an internal collaborator pins the call graph, not the behaviour. Only a boundary you own — a message actually sent — is a real contract. |
 | "The branch is protected, so Q18 is a Yes." | Protection and immutability are separate settings. Read `allow_force_pushes`, `allow_deletions`, and whether `enforce_admins` is on or a ruleset has a standing `bypass_actors` entry — in a small team where everyone is an admin, protection without those is decorative. |
+| "They wrote their own date/CSV/retry helper, so Q22 is a No." | Check first: does a library for their niche exist, does the runtime now ship it (`crypto.randomUUID`, `structuredClone`, `Intl`, `zoneinfo`), did they try one and remove it, is there a written no-dependency policy, and is the helper a thin wrapper — which is a seam, not a reinvention. |
+| "It's only 200 lines, so hand-rolling it was fine." | Line count is the wrong axis. Count the edge cases: 200 lines of CSV splitting is a smaller file and a bigger liability than `import csv`. |
+| "They should use the library, so I'll name one." | Not until you check it: last release, maintainers, open issues, licence, transitive deps, bundle size. Swapping working code for an abandoned package with forty transitive dependencies is a worse trade, and a recommendation without that check isn't finished. |
+| "Hand-rolled crypto is a Q22 cleanup." | It is a 🔴 security finding that happens to be filed under Q22. Same for JWT verification, OAuth flows and HTML sanitization — those go in "Today", not in the refactor list, and never in a batched cleanup PR. |
 | "Their eslint config is long, so Q16 is high." | Length is not coverage. Resolve the effective config with `eslint --print-config` and diff rule names against the baseline — most rules arrive through presets, and a long config can still miss the whole promise group. |
 | "The type-aware rules are in their config, so they're on." | Half the baseline needs `projectService`/`project` and installed dependencies. Without them the rules load, match nothing, and look enabled. Check, and report the percentage as nominal if they aren't resolving types. |
 
@@ -280,9 +294,10 @@ tools are installed — so the next review is a re-run, not a rediscovery.
   Spring/ASP.NET, follows router mounts one file deep for prefix and auth, counts references
   to each path; the mechanical half of Q3 and Q4.
 - `scripts/dup-blocks.py` — normalised-window duplicate detector with no dependencies; Q5.
-- `scripts/quality-digest.py` — the config/test/CI/secret/type/size/error scans and the
+- `scripts/quality-digest.py` — the config/test/CI/secret/type/size/error scans, the eighteen
+  hand-rolled-implementation signals paired against the dependency manifest (Q22), and the
   `DIGEST.md` writer. Pure read.
-- `references/quality-checklist.md` — the twenty-one questions: what to look at, why each matters,
+- `references/quality-checklist.md` — the twenty-two questions: what to look at, why each matters,
   what good looks like, and the fix. Deliberately kept above per-language tooling detail: it
   carries the false positives, thresholds and judgment calls, not an ecosystem tutorial. Read
   during step 3.
