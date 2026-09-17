@@ -1,6 +1,6 @@
 # Code review report template
 
-Use this shape. Every one of the sixteen questions gets a row in the scorecard and a section,
+Use this shape. Every one of the eighteen questions gets a row in the scorecard and a section,
 even when the answer is "Yes, verified" in one line — a reader checking the review against the
 checklist should never wonder whether a question was skipped. Lead with the worst thing. Write
 for someone who knows the domain but didn't watch you work: what it is, why it matters, what to
@@ -42,13 +42,15 @@ time.>
 | 7 | Integration tests | | High | <none — nothing boots the app> |
 | 8 | Module graph is a DAG | | Medium | <2 cycles, one through the domain core> |
 | 9 | Types set up | | High | <strict: false in api/tsconfig.json; 310 `any`> |
-| 10 | CI gates every PR | | High | <workflow on push to main only, not required> |
+| 10 | CI exists and gates every PR | | High | <workflow on push to main only, not required; no coverage gate> |
 | 11 | No committed secrets | | **Critical** | <.env tracked; live Stripe key> |
 | 12 | Lockfile committed + audited | | Medium | <lock present; 3 high advisories> |
 | 13 | No oversized files | | Medium | <2 files over 1000 lines> |
 | 14 | Errors not swallowed | | Medium | <31 empty catches, 4 in payment path> |
 | 15 | README covers setup/run/test | | Low | <install only; test command is stale> |
 | 16 | Baseline ESLint rules enabled (TS/JS) | <n>% / N/A | High below ~80% | <62/105 as error; promise group absent> |
+| 17 | Test coverage ≥ 80%, threshold enforced | <n>% lines / <n>% branches | High | <71% lines, 48% branches, no threshold; auth/ at 12%> |
+| 18 | Force-push + deletion blocked on the default branch | | **High** | <not protected at all / protected but enforce_admins false> |
 
 **Answer counts:** <n> Yes · <n> Partial · <n> No · <n> Unknown · <n> N/A
 
@@ -127,8 +129,24 @@ highest fan-in module. The fix per cycle plus the lint rule that keeps it fixed.
 
 ## Q10. CI gates — <Answer>
 
-| Workflow | Triggers on PR | Lint | Types | Tests | Required by branch protection |
-|---|---|---|---|---|---|
+Reproduce the gate table from the checklist, filled in. A missing workflow is the first line.
+
+| Gate | Present | Evidence |
+|---|---|---|
+| A CI workflow exists | | <path, or **none found**> |
+| Triggers on `pull_request` | | |
+| Linter runs | | |
+| Type check runs | | |
+| Unit tests run | | |
+| Integration tests run | | <on PRs / scheduled only / not at all> |
+| Coverage threshold enforced (≥80%) | | <the command CI runs, and whether it carries the gate> |
+| Dependency audit runs | | |
+| Required by branch protection or ruleset | | <`gh api …/protection` result> |
+| No `continue-on-error` on the gates | | |
+| Covers every package | | |
+
+| Workflow | Triggers on PR | Lint | Types | Unit | Integration | Coverage | Required |
+|---|---|---|---|---|---|---|---|
 
 ## Q11. Committed secrets — <Answer>
 
@@ -177,13 +195,48 @@ changes; and the wave plan — which zero-violation rules can be committed as ra
 the measured violation count for the rest. Cross-reference Q1 and Q10: coverage means nothing if
 the lint job is not required.>
 
+## Q17. Test coverage — <n>% lines / <n>% branches (recommended ≥ 80%, enforced)
+
+**Measured with:** <the exact command> · **Threshold configured:** <where, at what number, or
+**none**> · **Tiers included:** <unit only / unit + integration> · **Excluded from the
+denominator:** <what the include/exclude list drops>
+
+| Scope | Lines | Branches | Note |
+|---|---|---|---|
+| Whole repo (production code) | | | |
+| <the module that matters most> | | | |
+| <lowest-covered file that matters> | | | |
+
+<Then: the three lowest-covered files whose failure would cost something, with percentages; why
+the branch number differs from the line number if it does; whether the covered lines are actually
+asserted (cross-reference Q6); and the ratchet plan — today's number, the threshold to set one
+point below it now, and which file to cover first. If coverage could not be produced, say so here
+and what was missing, and answer Unknown rather than estimating.>
+
+## Q18. History protection — <Answer>
+
+| Setting | State | Evidence |
+|---|---|---|
+| Force-push blocked (`allow_force_pushes` false / `non_fast_forward` rule) | | |
+| Deletion blocked (`allow_deletions` false / `deletion` rule) | | |
+| Binds admins (`enforce_admins` true / no standing `bypass_actors`) | | |
+| Required checks present (from Q10) | | |
+| Tag protection on release tags | | <N/A if releases are not cut from tags> |
+| Org: members cannot delete repositories | | <ask if not readable> |
+| A second copy exists | | <mirror, or "unknown — asked"> |
+
+<One line on who currently has write access, and the `gh api -X PUT …/protection` call that fixes
+it. If the repo is unprotected, this belongs in "Today" in the sequence below regardless of what
+else the review found.>
+
 ---
 
 ## Recommended sequence
 
-**Today (hours, no risk):** <add the auth guard to the 4 open routes; rotate the committed key;
-turn the CI workflow on for pull_request and mark it required; commit the <n> zero-violation
-baseline lint rules as ratchets>
+**Today (minutes to hours, no risk):** <block force-push and deletion on the default branch and
+set enforce_admins; add the auth guard to the 4 open routes; rotate the committed key; turn the CI
+workflow on for pull_request and mark it required; set the coverage threshold one point below
+today's measured number; commit the <n> zero-violation baseline lint rules as ratchets>
 **This week (a day or two):** <one integration test that boots the app; strict types in the api
 package; delete the dead exports knip found>
 **Then (decisions, not fixes):** <split the two 1500-line modules; consolidate the duplicated

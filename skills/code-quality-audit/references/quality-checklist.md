@@ -1,4 +1,4 @@
-# Code quality checklist — the sixteen questions, how to answer each, and what "good" looks like
+# Code quality checklist — the eighteen questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -16,7 +16,8 @@ impression of the code (label these, or leave them out).
 Contents: Q1 Lint + type checker · Q2 Dead code · Q3 Endpoint auth · Q4 Dead endpoints ·
 Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types · Q10 CI gates ·
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
-Q15 README · Q16 Baseline lint-rule coverage
+Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
+Q18 Force-push and deletion blocked
 
 ---
 
@@ -295,9 +296,9 @@ where a bug costs something. The shape matters more than the count:
 - Are they **deterministic** — no `sleep`, no real clock, no shared mutable fixture, no order
   dependence? Check for `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip` and count them;
   a suite with 40 skipped tests is a suite with 40 known-broken tests.
-- Coverage: report it only if you measured it (`npm test -- --coverage`, `pytest --cov`,
-  `go test -cover ./...`), and name what is uncovered that matters rather than the headline
-  percentage.
+- Coverage is **Q17**, which has a hard recommended floor of 80% on lines and branches and asks
+  whether a threshold enforces it. Answer this question on whether the tests exist, pass, and
+  test behaviour; answer the percentage there.
 
 What good looks like: the suite runs in under a couple of minutes, passes on a clean checkout
 with one documented command, covers every non-trivial branch of the domain logic, and fails
@@ -307,6 +308,7 @@ range is typical of a healthy repo; well outside it in either direction is worth
 The fix, in this order: get the suite green and in CI (a red suite is worse than none, because
 it trains the team to ignore failures), then write tests for the next bug you fix rather than
 retrofitting coverage broadly, starting with auth, money, and anything with a `TODO` near it.
+Only then chase the Q17 number.
 
 ## Q7. Are there integration tests? (recommended: yes)
 
@@ -333,10 +335,18 @@ Do not run these against anything shared. Run them only if they stand up their o
 otherwise report them as present-but-not-executed and say what they need. Never point a test
 suite at a database you did not create.
 
+A Yes needs them to **exist and to run in CI on every PR**, not to exist and be run by hand
+before a release. An integration suite nobody runs rots faster than a unit suite, because the
+service it boots keeps changing underneath it — check Q10 for the job, and check the last few
+merged PRs actually executed it rather than skipping it on a path filter. Where the full tier is
+genuinely too slow for every PR, the Yes requires a fast subset on PRs plus the full tier on a
+schedule, with the schedule's failures going somewhere a human reads.
+
 What good looks like: at least one test that boots the real app and exercises the critical path
 end to end against a real database — signup → login → the one thing the product does → the one
-thing that takes money. Plus one 401/403 test per auth mode. Three good integration tests are
-worth a hundred mocked unit tests for the failures that actually reach production.
+thing that takes money. Plus one 401/403 test per auth mode. Wired into CI as a required check.
+Three good integration tests are worth a hundred mocked unit tests for the failures that
+actually reach production.
 
 The fix: start with one. `supertest`/`TestClient` against the app object with a containerised
 database, covering login plus the main flow, wired into CI. Name the flow in the report.
@@ -426,32 +436,68 @@ The fix: turn strictness on **per directory**, not repo-wide in one PR — `stri
 (the API layer and the DB layer), since that is where types prevent real bugs. Get the CI gate
 in before the backlog is finished, so new code cannot add to it.
 
-## Q10. Does CI gate every PR on lint, types, and tests? (recommended: yes, blocking)
+## Q10. Does CI exist, and does it gate every PR on lint, types, tests, integration tests and coverage? (recommended: yes, blocking)
+
+The first sub-question is the blunt one: **is there any CI at all?** A repo with no workflow file
+fails this outright, and that failure caps Q1, Q6, Q7 and Q17 at Partial no matter how good the
+configuration is, because nothing in the repo is verified by anything but a human remembering to
+run it.
 
 ```bash
-git ls-files .github/workflows/ .gitlab-ci.yml .circleci/ Jenkinsfile azure-pipelines.yml
-grep -nE '^\s*(on|jobs|steps)|pull_request|eslint|tsc|mypy|ruff|test|audit' .github/workflows/*.y*ml
-gh api repos/{owner}/{repo}/branches/main/protection 2>/dev/null   # is it required, or advisory?
-gh pr list --state merged --limit 20 --json number,statusCheckRollup  # did checks actually run?
+# 1. Does CI exist?
+git ls-files .github/workflows/ .gitlab-ci.yml .circleci/ Jenkinsfile azure-pipelines.yml bitbucket-pipelines.yml .buildkite/
+# 2. What does each workflow trigger on, and what does it run?
+grep -nE '^\s*(on|jobs|steps)|pull_request|merge_request|eslint|biome|tsc|mypy|ruff|golangci|clippy|rubocop|test|coverage|cov|playwright|cypress|audit|continue-on-error' .github/workflows/*.y*ml
+# 3. Is it required, or advisory?
+gh api repos/{owner}/{repo}/branches/main/protection 2>/dev/null          # 404 = not protected
+gh api repos/{owner}/{repo}/rulesets 2>/dev/null                          # [] = no rulesets either
+# 4. Did the checks actually run on what was merged?
+gh pr list --state merged --limit 20 --json number,statusCheckRollup
+gh run list --branch main --limit 10 --json name,conclusion,event
 ```
 
-A Yes needs: a workflow that triggers **on pull_request**, runs lint + type check + tests, and
-is **required** by branch protection so a red check blocks merge. A workflow that only runs on
-push to `main`, or that exists but is not required, is a Partial — it tells you after the fact.
-Check that it runs on the whole repo, not one package of a monorepo, and that it is not
-`continue-on-error: true`.
+Every row of this table is part of the answer, and the report reproduces it filled in:
 
-Also record: Dependabot or Renovate present, a dependency/vulnerability scan
-(`npm audit`, `pip-audit`, `govulncheck`, CodeQL, semgrep, trivy), and whether the suite is fast
-enough that people do not routinely merge past it (over ~15 minutes and they will).
+| Gate | Recommended | What a No means |
+|---|---|---|
+| A CI workflow exists | **yes** | nothing is verified automatically; everything below is moot |
+| Triggers on `pull_request` | **yes** | push-to-main-only CI tells you after the fact |
+| Linter runs (Q1, Q16) | **yes, blocking** | style and correctness rules are advisory |
+| Type check runs (Q9) | **yes, blocking** | strict types are an editor feature, not a guarantee |
+| Unit tests run (Q6) | **yes, blocking** | a red suite can merge |
+| Integration tests run (Q7) | **yes, blocking** (or a fast subset on PRs + the full tier scheduled) | the app can stop booting without anyone noticing |
+| Coverage threshold enforced (Q17) | **yes, blocking at ≥ 80%** | coverage drifts down one PR at a time |
+| Dependency audit runs (Q12) | yes (non-blocking is acceptable while a backlog is cleared) | advisories accumulate silently |
+| Required by branch protection or a ruleset | **yes** | every gate above is a suggestion |
+| Force-push and deletion blocked (**Q18**) | **yes** | history can be rewritten or erased; configured in the same place, asked separately |
+| Not `continue-on-error: true` | **yes** | the check is green whatever it found |
+| Runs every package of a monorepo | **yes** | one package is guarded and the others are not |
 
-What good looks like: one required workflow per package, under ten minutes, running lint, types,
-unit tests and a fast integration tier on every PR, with branch protection requiring it and at
-least one review.
+Two traps worth checking by hand. A job that is required but whose steps are guarded by
+`if:` conditions or `paths:` filters can pass without running anything — confirm on a recent
+merged PR that the step actually executed. And a gate that runs the test command **without** the
+coverage flag (`npm test` where the threshold lives in `npm run test:coverage`) enforces nothing;
+the command CI runs must be the command that carries the gate.
 
-The fix: the minimal blocking workflow is a dozen lines — checkout, install with the lockfile,
-`lint`, `typecheck`, `test` — then mark it required in branch protection. If the suite is red
-today, gate on lint and types first and add tests to the gate the day they pass.
+Also record: whether Dependabot or Renovate is configured, and whether the suite is fast enough
+that people do not routinely merge past it — over roughly fifteen minutes and they will.
+
+What good looks like: one required workflow per package, under ten minutes, running lint, type
+check, unit tests, an integration tier and a coverage gate on every pull request, with branch
+protection or a ruleset requiring it and at least one review.
+
+The fix, in this order, because each step is worth having before the next one lands:
+
+1. **Protect the branch.** If CI already exists and is green, requiring it is a settings change
+   measured in minutes and it is the single highest-value fix in this whole checklist.
+2. **Add the missing gates** to the existing workflow — lint first (fastest, and Q16's
+   zero-violation wave makes it green immediately), then type check, then tests.
+3. **Add the coverage gate last**, at one point below today's measured number (Q17), so it goes
+   green on the first run and ratchets from there.
+
+The minimal blocking workflow is a dozen lines: checkout, install from the lockfile, `lint`,
+`typecheck`, `test`. If the suite is red today, gate on lint and types now and add tests to the
+gate the day they pass — never leave a required check that is expected to fail.
 
 ## Q11. Are secrets committed to the repo? (recommended: no)
 
@@ -700,3 +746,186 @@ The five places marked `ADAPT:` in the baseline need the repo's own paths (ignor
 the import-cycle scope, the React globs). The entries marked `DECISION:` are deliberate
 narrowings with the reasoning attached — a repo that has narrowed them differently for a stated
 reason is fine, and a repo that has silently dropped them is not.
+
+## Q17. Is test coverage at least 80%, and is the threshold enforced? (recommended: yes)
+
+Q6 asks whether tests exist and pass; Q7 whether anything boots the real app. This asks how much
+of the code the suite actually executes, and whether anything stops that number sliding down.
+
+**Measure it. Never estimate it**, and never quote a badge or a README figure you did not
+reproduce. If you cannot run the suite with coverage on, the answer is Unknown and you say what
+was missing — a guessed percentage is worse than no percentage.
+
+```bash
+# JS / TS
+npx --no-install vitest run --coverage 2>&1 | tail -20
+npx --no-install jest --coverage --coverageReporters=text-summary 2>&1 | tail -12
+# Python
+pytest --cov --cov-branch --cov-report=term-missing -q 2>&1 | tail -25
+# Go  (no branch coverage; atomic mode counts every statement once)
+go test -covermode=atomic -coverprofile=/tmp/c.out ./... >/dev/null 2>&1 && go tool cover -func=/tmp/c.out | tail -1
+# Rust
+cargo llvm-cov --summary-only 2>&1 | tail -6        # or: cargo tarpaulin --out Stdout
+# Ruby: simplecov prints the total at the end of `bundle exec rspec`
+# Java: ./gradlew jacocoTestReport  → build/reports/jacoco/test/html/index.html
+# C#: dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=json
+
+# Is a threshold configured anywhere, and at what number?
+git grep -nE 'coverageThreshold|coverage\.thresholds|--cov-fail-under|fail_under|minimum_coverage|jacocoTestCoverageVerification|/p:Threshold|--fail-under' \
+  -- '*.json' '*.js' '*.ts' '*.mjs' '*.cfg' '*.ini' '*.toml' '*.yml' '*.yaml' '*.gradle' '*.rb' Makefile
+```
+
+**Two numbers, not one.** Line coverage is what tools print by default; **branch** coverage is
+the one that tells you something, because a file whose every line executes under a single input
+can still have every `if`, every `?:` and every `catch` untested. 85% lines with 45% branches is
+a much weaker suite than the headline suggests. Report both wherever the tool provides both
+(`--cov-branch`, vitest/jest report it by default, Go does not have it at all — say so).
+
+Three things make a headline percentage lie, and each is worth a line in the report:
+
+- **What is in the denominator.** Generated clients, migrations, `__init__.py`, config files,
+  type-only files and vendored code all inflate or deflate the number depending on which side of
+  the include/exclude they land. Read the `collectCoverageFrom` / `coverage.include` / `omit`
+  list before quoting anything, and say what it excludes.
+- **Where the uncovered 20% is.** This is the actual finding. 80% overall with the auth
+  middleware, the payment path, or the migration runner at 0% is worse than 65% spread evenly.
+  Get per-file numbers (`--cov-report=term-missing`, `go tool cover -func`, the HTML report) and
+  name the three lowest-covered files that matter, with their percentages.
+- **Whether the covered lines are asserted.** A test that calls a function and asserts nothing
+  raises coverage and catches no regression. Coverage is a floor on what is *executed*, never
+  evidence that behaviour is *checked* — cross-reference Q6's "tests the mock" question before
+  treating a high number as good news.
+
+**Enforcement is half the question.** A measured 84% with nothing failing the build is a
+Partial: it drifts down one PR at a time, and nobody notices until it starts with a 6. The gate
+belongs in the test command itself so it fails locally too, not only in CI:
+
+| Stack | The gate |
+|---|---|
+| vitest | `coverage: { thresholds: { lines: 80, branches: 80 } }` in `vitest.config.ts` |
+| jest | `coverageThreshold: { global: { lines: 80, branches: 80 } }` |
+| pytest | `--cov-fail-under=80` in `addopts`, plus `[tool.coverage.report] fail_under = 80` |
+| go | no built-in gate; a CI step that parses `go tool cover -func` and exits non-zero |
+| cargo-llvm-cov | `--fail-under-lines 80` |
+| simplecov | `minimum_coverage 80` in `spec_helper.rb` |
+| jacoco | a `jacocoTestCoverageVerification` rule wired into `check` |
+| coverlet | `/p:Threshold=80 /p:ThresholdType=line%2Cbranch` |
+
+Then Q10 checks that the command carrying the gate is the one CI runs on every PR.
+
+**Integration and E2E coverage usually is not counted.** Playwright, Cypress and any suite that
+drives a separate process contribute nothing to a unit-test coverage report unless the run is
+instrumented (`c8`/`nyc` wrapping the server, `coverage run` with `--parallel-mode`, jacoco's
+agent on the app under test). A repo with excellent Q7 coverage can therefore show a low Q17
+number. Say which tiers the figure includes rather than failing the repo for a measurement gap,
+and where combined coverage is achievable, report it.
+
+What good looks like: 80% or better on lines **and** branches for production code, a threshold in
+the test command that fails the build below it, no critical module far below the average, and the
+excludes list short enough to read. Above roughly 90% the marginal test is usually being written
+for the number rather than for a bug, and the effort belongs in Q7 instead.
+
+The fix: ratchet, do not sprint. Measure today's number, set the threshold **one point below it**
+so the build goes green immediately, and raise it as tests land — a threshold set to an
+aspirational 80% on a repo at 55% is a red build the team will delete within a week. Spend the
+first tests on the lowest-covered file that would hurt most if it broke, not on the easiest file
+to cover. If the suite is currently red, Q6 comes first: coverage of a failing suite is a
+meaningless number.
+
+## Q18. Is the default branch's history protected from force-push and deletion? (recommended: yes)
+
+Every other question on this list is about the quality of the code. This one is about whether the
+code can be **destroyed** — by a rogue engineer, a departing contractor, a compromised token, or
+far more often a tired person running `git push --force` from the wrong directory at 1am. It is
+the cheapest insurance in this checklist and the most frequently absent.
+
+Q10 asks whether branch protection makes CI *required*. This asks whether it makes history
+*immutable*. They are configured in the same place and are independent settings: a repo can
+require every check and still allow anyone with write access to erase a year of commits with one
+command.
+
+```bash
+O=<owner>; R=<repo>; B=$(gh api repos/$O/$R --jq .default_branch)
+
+# Classic branch protection: is force-push and deletion blocked, and does it bind admins?
+gh api "repos/$O/$R/branches/$B/protection" --jq \
+  '{force_push_allowed: .allow_force_pushes.enabled,
+    deletion_allowed:   .allow_deletions.enabled,
+    binds_admins:       .enforce_admins.enabled,
+    required_checks:    (.required_status_checks.contexts // []),
+    linear_history:     .required_linear_history.enabled}' 2>/dev/null || echo "NOT PROTECTED"
+
+# Rulesets are the newer mechanism and can coexist. `non_fast_forward` IS the force-push block.
+gh api "repos/$O/$R/rulesets" --jq '.[] | {id, name, enforcement, target}'
+for id in $(gh api "repos/$O/$R/rulesets" --jq '.[].id'); do
+  gh api "repos/$O/$R/rulesets/$id" --jq \
+    '{name, enforcement, refs: .conditions.ref_name.include,
+      rules: [.rules[].type],
+      bypass: [.bypass_actors[]? | {actor_type, bypass_mode}]}'
+done
+
+# Who can push at all, and who could bypass whatever is configured
+gh api "repos/$O/$R/collaborators?permission=push" --jq '.[].login' 2>/dev/null
+gh api "repos/$O/$R" --jq '{archived, is_template, visibility, delete_branch_on_merge}'
+
+# Tags: a release is keyed on a tag, so a moved tag changes what a published version points at
+gh api "repos/$O/$R/rulesets" --jq '.[] | select(.target=="tag") | .name' 
+```
+
+What each finding means:
+
+| Setting | Recommended | What a No allows |
+|---|---|---|
+| `allow_force_pushes` / no `non_fast_forward` rule | **blocked** | anyone with write access rewrites or deletes any commit on the default branch |
+| `allow_deletions` / no `deletion` rule | **blocked** | the default branch itself can be deleted |
+| `enforce_admins` (classic) or empty `bypass_actors` (rulesets) | **on / empty** | protection applies to everyone except the people most likely to have a bad day; in a small team where everyone is an admin this makes the whole thing decorative |
+| Tag protection on `v*` / release tags | **yes** if releases are cut from tags | a tag is moved and a published release silently points at different code |
+| Org setting: members cannot delete repositories | **yes** | force-push protection is moot if the whole repo can be deleted |
+| A second copy exists (mirror, or any clone that is fetched regularly) | **yes** | recovery depends entirely on GitHub |
+
+Three traps, in the order they bite:
+
+- **A ruleset with a bypass actor is not protection for the actor listed.** Read
+  `bypass_actors`: `{actor_type: "OrganizationAdmin", bypass_mode: "always"}` means every org
+  admin can force-push, which in a five-person company is everyone. `bypass_mode: "pull_request"`
+  is the narrower, usually-correct form.
+- **`enforce_admins: false` is the default** when protection is created through the UI without
+  ticking the box, and it is the single most common reason a protected branch is not protected.
+- **Protection covers the branch, not the repository.** Blocking force-push does nothing about
+  repository deletion, transfer, or visibility change. Those live in the org's settings
+  (`members_can_delete_repositories`, `members_can_delete_issues`) and belong to whoever owns the
+  org — worth naming in the report even though it is outside this repo.
+
+Recovery, so the report is accurate about consequences rather than alarming: a force-push does not
+immediately erase objects on GitHub's side, and any teammate's clone or CI cache may still hold
+the old commits, so a fast response often recovers everything. But the recovery path is unreliable
+— it depends on the reflog of a machine you do not control, or on GitHub support finding
+unreachable objects before they are garbage-collected. Treat it as a reason to act quickly, never
+as a substitute for the setting.
+
+What good looks like: on the default branch, force-push blocked, deletion blocked, protection
+binding administrators with no standing bypass actor, required status checks from Q10, and — if
+releases are cut from tags — a tag ruleset on the release pattern. Plus one honest answer to "if
+this repository disappeared tonight, where is the other copy?"
+
+The fix, and this is minutes of work, not a project:
+
+```bash
+gh api -X PUT "repos/$O/$R/branches/$B/protection" --input - <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["<the CI check name from Q10>"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": { "required_approving_review_count": 1 },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+Setting `enforce_admins` on a one-person repo will feel like locking yourself out; it is not — a
+pull request still merges normally, and it is what stops an accidental `--force` on `main`. If
+solo-committing directly to the default branch is the actual workflow, block force-push and
+deletion and leave the review requirement off, rather than skipping protection altogether because
+the review rule felt heavy. Those two settings are the ones that preserve the code, and they cost
+nothing to have on.

@@ -144,10 +144,72 @@ for wf in ci["github_workflows"] + ci["other"]:
                  "typecheck": bool(re.search(r"\b(tsc|mypy|pyright|typecheck|type-check)\b", t, re.I)),
                  "tests": bool(re.search(r"\b(pytest|jest|vitest|mocha|go test|cargo test|rspec|npm test|yarn test|pnpm test|dotnet test|gradle test|mvn test|phpunit|test)\b", t, re.I)),
                  "format": bool(re.search(r"\b(prettier|black|gofmt|rustfmt|ruff format|format:check|--check)\b", t, re.I)),
-                 "audit": bool(re.search(r"\b(npm audit|pip-audit|cargo audit|govulncheck|trivy|snyk|dependabot|dependency-review|codeql|semgrep|bandit)\b", t, re.I))}
+                 "audit": bool(re.search(r"\b(npm audit|pip-audit|cargo audit|govulncheck|trivy|snyk|dependabot|dependency-review|codeql|semgrep|bandit)\b", t, re.I)),
+                 "coverage": bool(re.search(r"--coverage|--cov\b|cov-fail-under|coverageThreshold|codecov|coveralls|jacoco|llvm-cov|tarpaulin|-covermode|-coverprofile", t, re.I)),
+                 "integration": bool(re.search(r"playwright|cypress|test:e2e|test:integration|testcontainers|docker[- ]compose|pytest.*(-m|--)\s*\w*(integration|e2e)|SpringBootTest", t, re.I)),
+                 "continue_on_error": bool(re.search(r"continue-on-error:\s*true", t, re.I)),
+                 "path_filtered": bool(re.search(r"^\s*paths(-ignore)?:", t, re.M))}
 ci["gates"] = gates
 ci["dependabot_or_renovate"] = glob_re(r"(^|/)(\.github/dependabot\.ya?ml|renovate\.json5?|\.renovaterc(\.json)?)$")
 inv["ci"] = ci
+
+# ---------- Q17 coverage config and thresholds ----------
+COV_THRESHOLD_RE = [
+    ("jest coverageThreshold", r"coverageThreshold[\s\S]{0,400}?(?:lines|branches|statements|functions)\s*:\s*(\d+)"),
+    ("vitest coverage.thresholds", r"thresholds\s*:\s*\{[\s\S]{0,300}?(?:lines|branches)\s*:\s*(\d+)"),
+    ("pytest --cov-fail-under", r"--cov-fail-under[= ](\d+)"),
+    ("coverage.py fail_under", r"fail_under\s*=\s*(\d+)"),
+    ("simplecov minimum_coverage", r"minimum_coverage\s+(\d+)"),
+    ("coverlet Threshold", r"/p:Threshold=(\d+)"),
+    ("cargo-llvm-cov fail-under", r"--fail-under-lines\s+(\d+)"),
+    ("nyc/c8 check-coverage", r"(?:lines|branches)\s*[:=]\s*(\d+)"),   # only applied to .nycrc/.c8rc below
+]
+cov_cfg = glob_re(r"(^|/)(\.coveragerc|codecov\.ya?ml|\.codecov\.ya?ml|\.nycrc(\.\w+)?|\.c8rc(\.\w+)?)$")
+cov_reports = glob_re(r"(^|/)(coverage\.xml|lcov\.info|coverage-final\.json|\.coverage|cobertura[\w-]*\.xml|jacocoTestReport\.xml)$")
+cov_search_files = [f for f in files if base(f) in (
+    "package.json", "pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini", ".coveragerc", "Makefile", "justfile",
+    "jest.config.js", "jest.config.ts", "jest.config.mjs", "jest.config.cjs", "vitest.config.ts", "vitest.config.js",
+    "vitest.config.mts", "vite.config.ts", "spec_helper.rb", "rails_helper.rb", "build.gradle", "build.gradle.kts",
+    ".nycrc", ".nycrc.json", "package-lock.json" if False else "package.json") or f.endswith((".csproj",))]
+cov_search_files = sorted(set(cov_search_files)) + ci["github_workflows"] + ci["other"]
+thresholds = []
+for f in cov_search_files:
+    t = T(f)
+    if not t:
+        continue
+    for name, rx in COV_THRESHOLD_RE:
+        if name.startswith("nyc/c8") and not re.search(r"\.(nycrc|c8rc)", f):
+            continue          # the generic lines:/branches: shape would shadow vitest and jest
+        for m in re.finditer(rx, t):
+            thresholds.append({"file": f, "kind": name, "value": int(m.group(1))})
+            break
+seen_thr = set(); deduped = []
+for t_ in thresholds:
+    k = (t_["file"], t_["value"])
+    if k in seen_thr:
+        continue
+    seen_thr.add(k); deduped.append(t_)
+thresholds = deduped
+jacoco_rule = [f for f in files if base(f) in ("build.gradle", "build.gradle.kts", "pom.xml") and re.search(r"jacocoTestCoverageVerification|<limit>", T(f))]
+vitest_provider = any("@vitest/coverage" in json.dumps(p.get("devDependencies", {}) or {}) for p in pkg.values())
+cov_config_keys = [f for f in cov_search_files if re.search(r"(vitest|vite|jest)\.config|package\.json$", f)
+                   and re.search(r"coverage\s*:|collectCoverage|coverageThreshold|coverageReporters", T(f))]
+cov_tooling = sorted({k for k, v in {
+    "@vitest/coverage-*": vitest_provider,
+    "vitest coverage configured (provider package NOT in devDependencies — the run cannot collect)":
+        bool(cov_config_keys) and not vitest_provider and "vitest" in deps,
+    "jest (built-in coverage)": "jest" in deps, "nyc": "nyc" in deps, "c8": "c8" in deps,
+    "pytest-cov": any("pytest-cov" in n for n in deps) or "pytest-cov" in pyproject_txt or "--cov" in pyproject_txt + setupcfg_txt,
+    "coverage.py": "coverage" in deps, "simplecov": "simplecov" in deps,
+    "jacoco": bool(jacoco_rule) or any("jacoco" in T(f).lower() for f in manifests.get("build.gradle", [])),
+    "coverlet": any("coverlet" in T(f) for f in glob_re(r"\.csproj$")),
+    "cargo-llvm-cov / tarpaulin": bool(glob_re(r"(^|/)(llvm-cov|tarpaulin)\.toml$")) or "cargo-tarpaulin" in deps,
+    "go (built-in -cover)": bool(manifests.get("go.mod")),
+}.items() if v})
+inv["coverage"] = {"config_files": cov_cfg, "committed_reports": cov_reports, "tooling": cov_tooling,
+                   "thresholds": thresholds, "jacoco_verification_rule": jacoco_rule,
+                   "max_threshold": max([x["value"] for x in thresholds], default=None),
+                   "min_threshold": min([x["value"] for x in thresholds], default=None)}
 
 # ---------- Q12 secrets ----------
 SECRET_PATTERNS = [("AWS access key id", r"\bAKIA[0-9A-Z]{16}\b"), ("Stripe live key", r"\bsk_live_[0-9a-zA-Z]{16,}"), ("Stripe test key", r"\bsk_test_[0-9a-zA-Z]{16,}"),
@@ -318,7 +380,7 @@ with open(os.path.join(out, "inventory.json"), "w") as fh:
 
 # ---------- DIGEST.md ----------
 md = [f"# Code quality inventory — `{root}` — {inv['date']}", "",
-      "Mechanical evidence for the sixteen questions in `references/quality-checklist.md`. Every line here is a pointer: open the file before you cite it. "
+      "Mechanical evidence for the eighteen questions in `references/quality-checklist.md`. Every line here is a pointer: open the file before you cite it. "
       "Suggested answers are mechanical and can be wrong in both directions.", ""]
 def sec(t): md.extend(["", f"## {t}", ""])
 def yesno(b): return "yes" if b else "NO"
@@ -405,14 +467,24 @@ sec("Q9. Types (recommended: yes)")
 for l, d in types.items(): md.append(f"- {l}: {d}")
 if not types: md.append("- no typed-language evidence")
 
-sec("Q10. CI gates on every PR: lint, type-check, tests (recommended: yes, blocking)")
+sec("Q10. CI exists and gates every PR: lint, types, unit tests, integration, coverage (recommended: yes, blocking)")
 if gates:
-    md.append("| Workflow | on PR | lint | typecheck | tests | format | audit |"); md.append("|---|---|---|---|---|---|---|")
-    for wf, g in gates.items(): md.append(f"| {wf} | {yesno(g['on_pull_request'])} | {yesno(g['lint'])} | {yesno(g['typecheck'])} | {yesno(g['tests'])} | {yesno(g['format'])} | {yesno(g['audit'])} |")
+    md.append("| Workflow | on PR | lint | typecheck | unit tests | integration | coverage | format | audit | continue-on-error | path filter |")
+    md.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    for wf, g in gates.items():
+        md.append(f"| {wf} | {yesno(g['on_pull_request'])} | {yesno(g['lint'])} | {yesno(g['typecheck'])} | {yesno(g['tests'])} | "
+                  f"{yesno(g['integration'])} | {yesno(g['coverage'])} | {yesno(g['format'])} | {yesno(g['audit'])} | "
+                  f"{'**yes**' if g['continue_on_error'] else 'no'} | {'yes — confirm a merged PR actually ran the steps' if g['path_filtered'] else 'no'} |")
 else:
     md.append("**No CI configuration found** (.github/workflows, GitLab, CircleCI, Jenkins, Bitbucket, Azure, Buildkite).")
 md.append(f"- Dependabot/Renovate: {', '.join(ci['dependabot_or_renovate']) or 'none'}")
-md.append("- Branch protection: see `branch-protection.json` if the inventory script could read it with `gh`; otherwise ask.")
+md.append("- Whether any of this is **required** (rather than advisory) is branch protection — see Q18 below, which reads the same API.")
+if gates:
+    missing = [k for k in ("lint", "typecheck", "tests", "integration", "coverage") if not any(g.get(k) for g in gates.values())]
+    onpr = [w for w, g in gates.items() if g["on_pull_request"]]
+    md.append(f"- Workflows triggering on pull requests: {', '.join(onpr) or '**none — CI runs only after merge**'}")
+    md.append(f"- Gates absent from every workflow: {', '.join(missing) if missing else 'none — all five present somewhere'}")
+    md.append("- A `continue-on-error: true` or a `paths:` filter above means a green check may have run nothing; confirm on a recent merged PR.")
 
 sec("Q11. Committed secrets (recommended: none)")
 sc = inv["secrets"]
@@ -445,6 +517,55 @@ md.append(f"- README: {rd['file'] or '**missing**'} ({rd['lines']} lines) · men
 
 sec("Q16. Baseline ESLint rule coverage (recommended: 100%)")
 md.append("Not computed here: it needs the repo's *effective* config. Run `npx --no-install eslint --print-config <a real .ts file>` and the coverage snippet in `references/quality-checklist.md` §Q16 against `references/eslint-baseline.config.mjs` (105 rules)." if ("typescript" in lang_files or "javascript" in lang_files) else "N/A — no TypeScript/JavaScript in this repo; Q1 covers the equivalent for " + ", ".join(primary) + ".")
+
+sec("Q17. Test coverage >= 80% on lines and branches, threshold enforced (recommended: yes)")
+cv = inv["coverage"]
+md.append(f"- Coverage tooling present: {', '.join(cv['tooling']) or '**none found**'}")
+md.append(f"- Coverage config files: {', '.join(cv['config_files']) or 'none'}")
+if cv["thresholds"]:
+    md.append(f"- **Thresholds configured** (highest {cv['max_threshold']}%):")
+    for t_ in cv["thresholds"][:10]:
+        md.append(f"  - {t_['file']}: {t_['kind']} = {t_['value']}%")
+else:
+    md.append("- **No coverage threshold found anywhere** — nothing fails the build when coverage drops.")
+if cv["jacoco_verification_rule"]:
+    md.append(f"- jacoco verification rule in: {', '.join(cv['jacoco_verification_rule'])}")
+if cv["committed_reports"]:
+    md.append(f"- Coverage reports committed (usually should be gitignored): {', '.join(cv['committed_reports'][:5])}")
+md.append(f"- CI runs coverage: {yesno(any(g.get('coverage') for g in gates.values())) if gates else 'no CI found'}")
+if cv["thresholds"] and not cv["tooling"]:
+    md.append("- **A threshold is configured but no coverage provider was found** — the run either fails or silently reports nothing. Check this first.")
+low = [t_ for t_ in cv["thresholds"] if t_["value"] < 80]
+if low:
+    md.append("- **Thresholds below the recommended 80%** (each sets the real floor for its own package): "
+              + ", ".join(f"{t_['file']} at {t_['value']}%" for t_ in low))
+md.append("- **The percentage is not computed here.** Run the suite with coverage on (`references/quality-checklist.md` §Q17), record lines *and* branches, read the include/exclude list, and get per-file numbers so the report can name the lowest-covered files that matter. Never estimate it.")
+
+sec("Q18. Force-push and deletion blocked on the default branch (recommended: yes)")
+bp = L("branch-protection.json")
+rs = L("rulesets.json")
+if isinstance(bp, dict) and bp and "error" not in bp:
+    def en(k):
+        v = bp.get(k) or {}
+        return bool(v.get("enabled")) if isinstance(v, dict) else False
+    md.append(f"- Force-push allowed: **{'YES — finding' if en('allow_force_pushes') else 'no (blocked)'}**")
+    md.append(f"- Deletion allowed: **{'YES — finding' if en('allow_deletions') else 'no (blocked)'}**")
+    md.append(f"- Binds admins (`enforce_admins`): **{'yes' if en('enforce_admins') else 'NO — protection does not apply to admins'}**")
+    checks = ((bp.get("required_status_checks") or {}).get("contexts") or [])
+    md.append(f"- Required status checks: {', '.join(checks) if checks else '**none**'} (Q10)")
+elif isinstance(bp, dict) and "error" in bp:
+    md.append(f"- Classic branch protection: **not readable** — {str(bp['error'])[:160]}")
+    md.append("  A `Branch not protected` 404 is not a tooling problem: it means the default branch is unprotected, which is the finding.")
+else:
+    md.append("- Classic branch protection: not read (no `gh`, or not a GitHub remote). Run the Q18 commands, or ask.")
+if isinstance(rs, list):
+    if not rs:
+        md.append("- Rulesets: **none** — classic protection above is the only mechanism.")
+    for r in rs[:10]:
+        md.append(f"  - ruleset `{r.get('name')}` target={r.get('target')} enforcement={r.get('enforcement')}")
+    if rs:
+        md.append("  - Read each ruleset's `rules[].type` for `non_fast_forward` (the force-push block) and `deletion`, and its `bypass_actors` — a standing bypass makes the rule decorative for those actors.")
+md.append("- Also worth asking, outside this repo: can org members delete repositories, and does a second copy of this history exist anywhere?")
 
 sec("Analyzer outputs present")
 md.append(", ".join(f"`{t}`" for t in tools) if tools else "none — run `scripts/run-analyzers.sh --repo <repo> --out <out>` for eslint/tsc/mypy/ruff/knip/vulture/jscpd/madge/audit output.")
