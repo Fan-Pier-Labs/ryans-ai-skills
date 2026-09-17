@@ -60,7 +60,6 @@ class Ctx:
         self.ig = self.L("import-graph.json")
         self.ep = self.L("endpoints.json")
         self.dup = self.L("dup-blocks.json")
-        self.dc = self.L("dead-code.json")
         self.tools = sorted(x for x in os.listdir(out) if x.startswith("tool-") and x.endswith(".txt"))
         self._commits = None
 
@@ -286,53 +285,9 @@ def render_dead_code(inv, ctx):
     tooling, wired, ts_strict = inv["tooling"], inv["tooling_wired"], inv["ts_strict"]
     types, ci, gates = inv["types"], inv["ci"], inv["ci"]["gates"]
     dc = inv["dead_code"]
-    d = ctx.dc
-    if d:
-        an = d["analysed"]
-        md.append(f"- **`dead-code.py` (deterministic, {an['python_files']} python + {an['ts_js_files']} ts/js files)** — "
-                  f"{an['entry_points']} entry points, import graph explains **{an['import_graph_coverage']:.0%}** "
-                  f"of non-test source, discovery **{an['entry_point_discovery']}**")
-        if an["entry_point_discovery"] != "ok":
-            md.append("  - **File-level findings are suppressed**: at this coverage the unreachable list is mostly "
-                      "an artifact of a root the pass cannot see. Re-run `scripts/dead-code.py --entry <roots>` "
-                      "before quoting any dead-file number."
-                      + (f" Unresolved repo-internal specifiers: {', '.join(an['unresolved_bare_specifiers'][:6])}"
-                         if an["unresolved_bare_specifiers"] else ""))
-        uf = d["unreachable_files"]
-        md.append(f"  - Unreachable files: **{len(uf)}**"
-                  + (f" ({sum(1 for x in uf if x['confidence'] == 'high')} high confidence)" if uf else ""))
-        for x in uf[:12]:
-            md.append(f"    - [{x['confidence']}] {x['file']} ({x['lines']} lines) — {x['verdict']}")
-        ud = d["unreferenced_definitions"]
-        md.append(f"  - Definitions referenced nowhere: **{len(ud)}**"
-                  + (f" ({sum(1 for x in ud if x['confidence'] == 'high')} high confidence)" if ud else ""))
-        for x in ud[:15]:
-            md.append(f"    - [{x['confidence']}] {x['file']}:{x['line']} {x['kind']} `{x['name']}` — {x['note']}")
-        en = d["exported_but_never_imported"]
-        if en:
-            md.append(f"  - Exported but never imported (the `export` is what is dead): **{len(en)}** — "
-                      + ", ".join(f"{x['file']}:{x['line']} `{x['name']}`" for x in en[:6]))
-        if d["excluded_with_reason"]:
-            md.append(f"  - Ruled out WITH a reason (not dead — read the reason, that is the part to check): "
-                      f"**{len(d['excluded_with_reason'])}**, e.g. "
-                      + "; ".join(f"`{x['name']}` ({x['reason'][:60]})" for x in d["excluded_with_reason"][:3]))
-        if d["languages_not_analysed"]:
-            md.append("  - **Not analysed deterministically** — judge these by reading, with the language's own tool: "
-                      + ", ".join(d["languages_not_analysed"]))
-        if d["parse_errors"]:
-            md.append(f"  - Unparsed, not guessed at: {len(d['parse_errors'])} file(s) — {d['parse_errors'][0]}")
-    else:
-        md.append("- `dead-code.json` not present — run `scripts/dead-code.py --repo <repo> --out <out>` for the "
-                  "deterministic Python/TS pass (unreachable files, unreferenced definitions). The lines below are "
-                  "the weaker text-level scan only.")
     md.append(f"- TODO/FIXME/HACK/XXX/DEPRECATED markers: {dict(dc['todo_counts']) or 0}" + (f" — top files: {', '.join(f'{f} ({n})' for f, n in dc['todo_top_files'][:5])}" if dc["todo_top_files"] else ""))
     md.append(f"- Commented-out code runs (≥5 code-looking comment lines): {len(dc['commented_out_code_runs'])}" + (" — " + "; ".join(dc["commented_out_code_runs"][:8]) if dc["commented_out_code_runs"] else ""))
-    if d:
-        # The text-level cross-reference below is what this section had before dead-code.py: no
-        # import graph, no entry points, no exclusions. Printing both would put two contradictory
-        # lists in one section, so the weaker one only appears when the real pass has not run.
-        pass
-    elif dc.get("unreferenced_definitions_total") is not None:
+    if dc.get("unreferenced_definitions_total") is not None:
         md.append(f"- Top-level definitions/exports with no reference anywhere else in the repo: **{dc['unreferenced_definitions_total']}** of {dc['definitions_checked']} checked (candidates — frameworks call handlers by convention; verify each):")
         for x in dc["unreferenced_definitions_candidates"][:40]: md.append(f"  - {x}")
     else:

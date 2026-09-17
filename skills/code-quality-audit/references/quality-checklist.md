@@ -90,89 +90,91 @@ job. Report the violation count as the finding; do not fix them as part of the r
 
 ## Q2. Is there dead code anywhere in the repo? (recommended: no)
 
-**Start with `scripts/dead-code.py`** (run by `repo-inventory.sh`), which answers the two
-mechanical halves of this question for **Python and TypeScript/JavaScript** with no dependency on
-anything being installed:
+Two of the five things below have a real tool. **Use it — do not hand-roll this.** The mechanical
+half of this question (which files nothing imports, which exports nothing uses) needs an import
+graph walked from entry points, and getting that right means knowing how every framework in the
+repo loads code. That is a maintained tool's job, not a grep's and not yours.
 
-```bash
-scripts/dead-code.py --repo <repo> --out <scratch>     # add --entry <roots> if it says to
-```
+| Stack | Tool | Install | What it answers |
+|---|---|---|---|
+| **TS / JS** | [`knip`](https://knip.dev) | `npm i -D knip` (or `npx --yes knip`) | Unused **files**, exports, types, enum members and dependencies, walked from entry points it detects with ~100 framework plugins |
+| **Python** | [`vulture`](https://github.com/jendrikseipp/vulture) | `pipx install vulture` (or `uvx vulture`) | Unused functions, classes, variables, attributes and imports, with a confidence score |
+| Everything else | the language's own | — | `staticcheck -checks U1000` (Go), the Rust compiler's `dead_code` lint, `debride` (Ruby), `periphery` (Swift), `phpstan` level 6+ (PHP), Roslyn IDE0051 (C#) |
 
-It resolves the import graph — relative paths, tsconfig `paths`, bundler module roots
-(`from 'src/components/X'`), workspace package names, inline `type` imports, `export *` barrels,
-`from x import *` — walks it from every entry point it can find (including `<script src>` in an
-HTML page, the paths quoted in a bundler config, `package.json` `main`/`bin`/`scripts`,
-console_scripts, shebangs, and framework-routed paths), and reports:
+`scripts/run-analyzers.sh` runs knip and vulture when they are present and lists them under
+"skipped (not installed)" when they are not. **If they are skipped, say so and ask the user to
+install them** — a Q2 answered without either is a Partial at best, and should say which tool was
+missing. `npx --yes knip` / `uvx vulture` are fine as a one-off if the user agrees; label the
+result as an ad-hoc run.
 
-| Finding | What it means |
-|---|---|
-| **Unreachable file** (high) | No importer anywhere, and not an entry point. The strongest result this produces |
-| **Unreachable cluster** (high) | Imported, but only by files that are themselves unreachable — delete them together or not at all |
-| **Reached only from tests** (medium) | The product never uses it; its test is keeping it alive. Delete both, in one commit |
-| **Unreferenced definition** (high for a `_private` name, else medium) | The name appears in no other file, in any form — identifier, attribute, or string |
-| **Exported but never imported** | Not dead, but the `export` / public name is. Narrowing it is what lets the next run see more |
-| **Excluded, with the reason** | What the pass declined to call dead: a decorator, `__all__`, a name in a template or a config string, a module loaded by name, a star-import, a framework-conventional path, or a **filename** named somewhere that is not importing it — a deploy script naming its payload, a README documenting `bun scripts/thing.ts` as a command to run |
+**knip and vulture are not equivalent, and the report should not imply they are.** knip walks the
+import graph from entry points, so it finds unimported *files* and whole dead clusters — a group
+of modules that import each other and which nothing outside the group imports. vulture has no
+import graph: it matches definitions against usages by name, so it answers "is this name used
+anywhere" but never "is this module reachable". For Python, the file-level half of this question
+stays a judgment call — walk it yourself against the entry points (`__main__`, console_scripts,
+`manage.py`, the WSGI/ASGI module, the Celery app) and say that is what you did.
 
-Two things to read before quoting any of its numbers:
+Two knip settings decide what its output means, so read them before quoting it:
 
-- **The excluded list is the interesting half.** Each row names the reason, and the reason is what
-  a reviewer checks. A row you disagree with is a finding the tool suppressed.
-- **`entry_point_discovery`**. The script reports what fraction of non-test source the import
-  graph explains, and if that is under 60% it **suppresses the file-level findings entirely** and
-  says so, because at that coverage the unreachable list is mostly an artifact of a root it could
-  not see. That is the moment to pass `--entry <the real roots>` — never the moment to quote the
-  number anyway. Its `unresolved_bare_specifiers` list usually names the cause.
+- **What it treats as an entry point.** Its plugins find most of them, but a root it cannot see
+  turns everything behind it into false "unused files". If the list looks implausibly long, the
+  entry config is wrong, not the repo — fix `entry` in `knip.json` and re-run rather than
+  reporting it.
+- **Whether test files are entry points.** By default they effectively are, so a module whose
+  *only* consumer is its own test reads as used. That module is dead code with a test attached,
+  and it is worth a second run with tests excluded from `entry` to surface exactly those — the
+  fix there deletes the module and its test in one commit.
 
-For **every other language** the script says so explicitly and names the tool that does answer
-(`staticcheck -checks U1000`, the Rust compiler's `dead_code` lint, `debride`, `periphery`,
-`phpstan`) — there is no half-guess, and the judgment comes back to you and the reading below.
+**A linter will not do this, and it is worth knowing why before someone suggests it.** ESLint is
+one file at a time: `no-unused-vars` and tsc's `noUnusedLocals` are file-local by design and never
+flag an `export`. The only cross-file rule in the ecosystem is `import/no-unused-modules` (and its
+`import-x` fork), and measured on a fixture with planted cases: on **ESLint 10 it is a no-op** —
+the plugin prints that ESLint removed the `FileEnumerator` API it needs; on **ESLint 9 with flat
+config** it requires a dummy `.eslintrc` on disk to load at all and its enumerator only sees
+`.js`, so every TypeScript case comes back clean. Even working, it asks "is this export imported
+by someone" rather than "is that someone alive", so a dead cluster is invisible to it and test
+files' own exports come back as false positives. Keep `no-unused-vars` on for what it is good at —
+unused locals, params and imports, on every PR, with autofix — and get the cross-file answer from
+knip.
 
-The rest of the question is not mechanical, and the script does not attempt it:
+The rest of the question has no tool and is yours:
 
-1. **Unreferenced functions, classes, exports** — the script covers Python and TS/JS; for other
-   languages, tools first:
-   ```bash
-   npx --no-install knip --reporter compact        # dead files, exports, deps — best for JS/TS
-   npx --no-install ts-prune                        # dead exports only
-   vulture . --min-confidence 80 --exclude 'venv,.venv,migrations'   # python
-   deadcode ./...                                   # go (golang.org/x/tools/cmd/deadcode)
-   cargo machete                                    # rust: unused deps
-   ```
-   By hand, one symbol at a time: `git grep -nw mySymbol | grep -v '^path/where/defined'`.
-2. **Unreferenced files.** A module nothing imports — `dead-code.py` for Python and TS/JS,
-   `knip` for JS/TS if it is installed, otherwise cross the file list against the import graph.
-3. **Commented-out code.** Runs of five or more comment lines that are clearly code:
+1. **Commented-out code.** Runs of five or more comment lines that are clearly code:
    ```bash
    git grep -nE '^\s*(//|#)\s*(if|for|while|return|def |class |function |const |let |var |import |from |self\.|this\.)' | wc -l
    ```
-4. **Unreachable branches**: `if (false)`, code after `return`, a feature flag hard-coded on
+2. **Unreachable branches**: `if (false)`, code after `return`, a feature flag hard-coded on
    for a year. Linters catch some of this; `grep -rn 'FEATURE_\|_ENABLED = True'` finds flags.
-5. **Dead dependencies**: declared, never imported. `knip`, `depcheck`, `cargo machete`,
-   `pip-extra-reqs`.
+3. **Dead dependencies**: declared, never imported. knip does this for JS/TS; otherwise
+   `depcheck`, `cargo machete`, `pip-extra-reqs`.
+4. **Code only its own test uses**, where the tool's default hides it (above).
+5. **Whole features nobody asked about** — a settings screen, an export path, a second auth
+   method. No tool will ever find these; the git history and the owner will.
 
-Before calling anything dead — including anything `dead-code.py` reported — rule out **the ways
-code gets called without an import**. The script already excludes the ones it can see, and names
-each exclusion; these are the rest: route
-decorators (`@app.get`, `@Controller`), DI containers and autowiring, CLI entry points
-(`[project.scripts]`, `package.json#bin`), Django `settings`/`urls`, template and JSX string
-references, serializers resolved by name, reflection, dynamic `importlib.import_module` /
-`require(variable)`, migration files, test fixtures and `conftest.py`, and **other repos in the
-org** that import this one as a library. A public package's exports are its product: for a
-library, unreferenced-inside-the-repo means nothing.
+Before calling anything dead, whatever reported it, rule out **the ways code gets called without
+an import**: route decorators (`@app.get`, `@Controller`), DI containers and autowiring, CLI entry
+points (`[project.scripts]`, `package.json#bin`), Django `settings`/`urls`, `<script src>` in an
+HTML page, a filename named in a deploy script or documented in a README as a command to run,
+template and JSX string references, serializers resolved by name, reflection, dynamic
+`importlib.import_module` / `require(variable)`, migration files, test fixtures and
+`conftest.py`, and **other repos in the org** that import this one as a library. A public
+package's exports are its product: for a library, unreferenced-inside-the-repo means nothing.
 
 Why it matters: dead code is read, maintained, refactored, and security-patched for no return.
 It makes every "where is this used" search ambiguous, and it is the main reason a codebase feels
 bigger than the product it delivers.
 
-What good looks like: no dead exports reported by the language's tool, `TODO`/`FIXME` count in
-the low tens with owners or issue links, no commented-out blocks (git history is the archive).
+What good looks like: knip clean (or a short, explained allowlist) and wired into CI so new dead
+code cannot land, `TODO`/`FIXME` count in the low tens with owners or issue links, no
+commented-out blocks (git history is the archive).
 
-The fix: delete it. Not comment it out, not `@deprecated` it — delete it, in one commit per
-area, with the tool's output in the commit message. Take the unreachable **files** first: they
-are the highest-confidence result and the largest line count per decision, and a cluster deletes
-as one commit. `--fail-on high` turns a clean result into a CI ratchet once the repo is at zero,
-which is what stops it coming back. If the team is nervous, delete behind one
-release of monitoring on the log line that says it was reached.
+The fix: delete it. Not comment it out, not `@deprecated` it — delete it, in one commit per area,
+with the tool's output in the commit message. Take unused **files** first: highest confidence,
+most lines per decision, and a dead cluster deletes as one commit. Once the repo is at zero, put
+knip in CI — that is what stops it coming back, and it is the difference between a cleanup and a
+fix. If the team is nervous, delete behind one release of monitoring on the log line that says it
+was reached.
 
 ## Q3. Do endpoints correctly require authentication *and* authorization? (recommended: yes)
 

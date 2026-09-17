@@ -126,9 +126,7 @@ Then run the inventory, which does the mechanical half of every question in one 
 scripts/repo-inventory.sh --repo <repo> --out <scratch dir>     # read-only; --no-analyzers to skip tool runs
 ```
 
-It writes `DIGEST.md` plus the JSON behind it: the import graph and its cycles (Q8), the
-deterministic dead-code pass for Python and TS/JS — unreachable files, unreferenced
-definitions, and everything it declined to call dead with the reason (Q2) — every
+It writes `DIGEST.md` plus the JSON behind it: the import graph and its cycles (Q8), every
 HTTP endpoint with its visible auth status and whether anything references it (Q3/Q4),
 duplicate blocks (Q5), hand-rolled implementations paired against the dependency list (Q22),
 test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
@@ -154,8 +152,11 @@ Rules that keep this honest:
   is not: `eslint --print-config <a real .ts file>` and `tsc --showConfig -p <each tsconfig>`
   resolve the presets and the `extends` chain that make a config's text an unreliable read.
   Read-only invocations only: never `--fix`, `--write`, or
-  `--unsafe-fixes`. If a tool is not installed, say "not installed, not run" rather than
-  guessing what it would say — or run it once from a throwaway location (`npx --yes`, `uvx`)
+  `--unsafe-fixes`. **Q2 is the one question with no acceptable fallback**: the "which files are
+  dead" half needs `knip` (TS/JS) or `vulture` (Python), so if the analyzer summary lists either
+  as skipped, ask the user to install it (`npm i -D knip`, `pipx install vulture`) and say the
+  question is Partial until then — never substitute a grep for it. If a tool is not installed,
+  say "not installed, not run" rather than guessing what it would say — or run it once from a throwaway location (`npx --yes`, `uvx`)
   if the user is fine with that, and label the result as an ad-hoc run.
 - **Count, then cite.** "12 of 47 route handlers have no auth check" beats "auth looks
   inconsistent". Every count needs the command that produced it in the report.
@@ -204,10 +205,6 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
   a file that imports nothing and is full of date, string, money or parsing code is where
   reinvention lives. Check the dependency manifest before writing the finding — a library that is
   already installed and going unused is a different, much cheaper finding than one that is not.
-- Read `dead-code.py`'s **excluded** list before its findings list: each row says why the pass
-  declined to call something dead, and a reason you disagree with is a finding it suppressed.
-  If it reported `entry_point_discovery: incomplete`, re-run it with `--entry <the real roots>`
-  before quoting a single dead-file number — do not report the suppressed list.
 - For every dead-code candidate, check the ways a framework calls code without an import:
   route decorators, DI containers, CLI entry points in `pyproject.toml` /
   `package.json#bin`, Django `settings`, template references, reflection, dynamic
@@ -263,9 +260,10 @@ that change and nothing else. Never batch fixes across questions.
 | "Same 30 lines in three places — extract a helper." | Check whether the three will change together. Coincidental similarity is not duplication, and a premature shared helper is worse than the copies. |
 | "There are circular imports, so the architecture is broken." | Say which cycle and what it costs: broken lazy loading, untestable modules, import-order bugs. A two-file type-only cycle is a nit; a cycle through the core domain is a High. |
 | "`git grep` found no callers, so it's dead code." | Frameworks call by convention and config, not imports. Check decorators, DI, entry points, templates, and dynamic imports first. |
-| "`dead-code.py` printed 400 unreachable files." | Read its coverage line. Below the floor it suppresses them and tells you a root is missing; above it, a number that large in a live repo still means an unresolved alias or a bundler root. Fix the roots with `--entry`, then re-run. Never paste a suppressed list into the report. |
-| "The script found nothing, so Q2 is a Yes." | It answers two mechanical halves for two languages. Commented-out blocks, unreachable branches, dead feature flags, dead dependencies and every other language are still yours — and a repo whose whole graph is entry points has told you nothing. |
-| "It's `medium` confidence, so it's probably dead." | Medium means the name appears in no other file. For a public library that is the normal state of its API, and for anything called by string it is wrong. Open the file. |
+| "The linter already covers dead code, so Q2 is handled." | It covers the inside of a file. `no-unused-vars` and `noUnusedLocals` are file-local by design and never flag an `export`. The one cross-file rule, `import/no-unused-modules`, is a **no-op on ESLint 10** (the API it needs was removed) and on ESLint 9 flat config only enumerates `.js` — measured, not assumed. Cross-file is knip's job. |
+| "knip listed 300 unused files." | Then its `entry` config is wrong, not the repo. A root its plugins cannot see makes everything behind it look unused. Fix `entry` and re-run; never paste that list into a report. |
+| "knip is clean, so nothing is dead." | Its default treats test files as entry points, so a module whose only consumer is its own test reads as used. Re-run with tests out of `entry` to surface those — that is dead code with a test attached, and both go in one commit. |
+| "vulture is the Python knip." | It is not. vulture matches names, with no import graph, so it answers "is this name used" but never "is this module reachable". The file-level half for Python is yours: walk it from the real entry points and say that you did. |
 | "The file is 3000 lines but it's generated / a schema." | Generated and vendored files are out of scope entirely. Exclude them from every count, and say you did. |
 | "I'll report duplication as a percentage." | Only if a tool measured it on non-vendored, non-generated code. Otherwise report the groups you found and where. |
 | "I couldn't run the linter, so I'll estimate the violations." | Never. "Not installed, not run" is the honest answer. |
@@ -299,12 +297,6 @@ tools are installed — so the next review is a re-run, not a rediscovery.
   `--help` for flags. `scripts/run-analyzers.sh` is the tool-runner half, callable alone.
 - `scripts/import-graph.py` — intra-repo import graph for Python and JS/TS, cycles via
   Tarjan SCC, fan-in/fan-out; the mechanical half of Q8.
-- `scripts/dead-code.py` — the deterministic half of Q2 for Python (parsed with `ast`) and
-  TS/JS: unreachable files, unreachable clusters, code reached only from its own tests,
-  definitions referenced nowhere, and an *excluded* list that names why each rule-out was made.
-  Reports its own import-graph coverage and suppresses file-level findings below it rather than
-  guessing; `--entry` names roots it cannot find, `--fail-on` makes it a CI ratchet. Every other
-  language is reported as unanalysed with the tool that does answer for it. `--help` for flags.
 - `scripts/find-endpoints.py` — routes for Express/Nest/Next/FastAPI/Flask/Django/Rails/Go/
   Spring/ASP.NET, follows router mounts one file deep for prefix and auth, counts references
   to each path; the mechanical half of Q3 and Q4.

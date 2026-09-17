@@ -40,7 +40,7 @@ skip() { SKIPPED="$SKIPPED | $1"; }
 
 # project dirs: the root plus any subdir (depth<=2) with a manifest, excluding vendored trees
 DIRS=$({ echo "$REPO"; find "$REPO" -maxdepth 3 -mindepth 2 \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name venv -o -name dist -o -name build \) -prune -o \
-  \( -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name setup.py -o -name go.mod -o -name Cargo.toml -o -name Gemfile \) -print 2>/dev/null | xargs -n1 dirname 2>/dev/null; } | sort -u)
+  \( -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name setup.py -o -name Pipfile -o -name go.mod -o -name Cargo.toml -o -name Gemfile \) -print 2>/dev/null | xargs -n1 dirname 2>/dev/null; } | sort -u)
 
 while IFS= read -r d; do
   [ -z "$d" ] && continue
@@ -74,7 +74,9 @@ while IFS= read -r d; do
     fi
   fi
   # ---- Python ----
-  if [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ] || ls "$d"/requirements*.txt >/dev/null 2>&1; then
+  # Pipfile counts: without it a Pipenv-managed repo got no Python analyzer at all — no ruff,
+  # no mypy, no vulture — and the digest's own manifest list has always included it.
+  if [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ] || [ -f "$d/Pipfile" ] || ls "$d"/requirements*.txt >/dev/null 2>&1; then
     if want ruff; then if has ruff; then run ruff "$d" ruff check --no-fix --output-format concise .; else skip "ruff ($rel)"; fi; fi
     if want mypy; then if has mypy; then run mypy "$d" mypy --ignore-missing-imports --no-error-summary . ; else skip "mypy ($rel)"; fi; fi
     if want pyright; then if has pyright; then run pyright "$d" pyright --outputjson; else skip "pyright ($rel)"; fi; fi
@@ -114,4 +116,13 @@ if want semgrep; then if has semgrep; then run semgrep "$REPO" semgrep scan --co
 {
   echo "ran:${RAN:- none}"
   echo "skipped (not installed):${SKIPPED:- none}"
+  # Q2 has no fallback worth reporting: without one of these, the "which files are dead"
+  # half of the question is unanswered, and the report has to say so rather than substitute
+  # a grep for it. Print the install line so the ask is one copyable command.
+  case "$SKIPPED" in
+    *knip*)    echo "Q2 needs knip for TS/JS dead files+exports: npm i -D knip   (or a one-off: npx --yes knip)" ;;
+  esac
+  case "$SKIPPED" in
+    *vulture*) echo "Q2 needs vulture for Python dead code:      pipx install vulture   (or a one-off: uvx vulture .)" ;;
+  esac
 } | tee "$OUT/analyzers-summary.txt"
