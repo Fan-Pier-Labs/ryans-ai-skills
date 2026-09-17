@@ -126,7 +126,9 @@ Then run the inventory, which does the mechanical half of every question in one 
 scripts/repo-inventory.sh --repo <repo> --out <scratch dir>     # read-only; --no-analyzers to skip tool runs
 ```
 
-It writes `DIGEST.md` plus the JSON behind it: the import graph and its cycles (Q8), every
+It writes `DIGEST.md` plus the JSON behind it: the import graph and its cycles (Q8), the
+deterministic dead-code pass for Python and TS/JS — unreachable files, unreferenced
+definitions, and everything it declined to call dead with the reason (Q2) — every
 HTTP endpoint with its visible auth status and whether anything references it (Q3/Q4),
 duplicate blocks (Q5), hand-rolled implementations paired against the dependency list (Q22),
 test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
@@ -202,6 +204,10 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
   a file that imports nothing and is full of date, string, money or parsing code is where
   reinvention lives. Check the dependency manifest before writing the finding — a library that is
   already installed and going unused is a different, much cheaper finding than one that is not.
+- Read `dead-code.py`'s **excluded** list before its findings list: each row says why the pass
+  declined to call something dead, and a reason you disagree with is a finding it suppressed.
+  If it reported `entry_point_discovery: incomplete`, re-run it with `--entry <the real roots>`
+  before quoting a single dead-file number — do not report the suppressed list.
 - For every dead-code candidate, check the ways a framework calls code without an import:
   route decorators, DI containers, CLI entry points in `pyproject.toml` /
   `package.json#bin`, Django `settings`, template references, reflection, dynamic
@@ -257,6 +263,9 @@ that change and nothing else. Never batch fixes across questions.
 | "Same 30 lines in three places — extract a helper." | Check whether the three will change together. Coincidental similarity is not duplication, and a premature shared helper is worse than the copies. |
 | "There are circular imports, so the architecture is broken." | Say which cycle and what it costs: broken lazy loading, untestable modules, import-order bugs. A two-file type-only cycle is a nit; a cycle through the core domain is a High. |
 | "`git grep` found no callers, so it's dead code." | Frameworks call by convention and config, not imports. Check decorators, DI, entry points, templates, and dynamic imports first. |
+| "`dead-code.py` printed 400 unreachable files." | Read its coverage line. Below the floor it suppresses them and tells you a root is missing; above it, a number that large in a live repo still means an unresolved alias or a bundler root. Fix the roots with `--entry`, then re-run. Never paste a suppressed list into the report. |
+| "The script found nothing, so Q2 is a Yes." | It answers two mechanical halves for two languages. Commented-out blocks, unreachable branches, dead feature flags, dead dependencies and every other language are still yours — and a repo whose whole graph is entry points has told you nothing. |
+| "It's `medium` confidence, so it's probably dead." | Medium means the name appears in no other file. For a public library that is the normal state of its API, and for anything called by string it is wrong. Open the file. |
 | "The file is 3000 lines but it's generated / a schema." | Generated and vendored files are out of scope entirely. Exclude them from every count, and say you did. |
 | "I'll report duplication as a percentage." | Only if a tool measured it on non-vendored, non-generated code. Otherwise report the groups you found and where. |
 | "I couldn't run the linter, so I'll estimate the violations." | Never. "Not installed, not run" is the honest answer. |
@@ -290,6 +299,12 @@ tools are installed — so the next review is a re-run, not a rediscovery.
   `--help` for flags. `scripts/run-analyzers.sh` is the tool-runner half, callable alone.
 - `scripts/import-graph.py` — intra-repo import graph for Python and JS/TS, cycles via
   Tarjan SCC, fan-in/fan-out; the mechanical half of Q8.
+- `scripts/dead-code.py` — the deterministic half of Q2 for Python (parsed with `ast`) and
+  TS/JS: unreachable files, unreachable clusters, code reached only from its own tests,
+  definitions referenced nowhere, and an *excluded* list that names why each rule-out was made.
+  Reports its own import-graph coverage and suppresses file-level findings below it rather than
+  guessing; `--entry` names roots it cannot find, `--fail-on` makes it a CI ratchet. Every other
+  language is reported as unanalysed with the tool that does answer for it. `--help` for flags.
 - `scripts/find-endpoints.py` — routes for Express/Nest/Next/FastAPI/Flask/Django/Rails/Go/
   Spring/ASP.NET, follows router mounts one file deep for prefix and auth, counts references
   to each path; the mechanical half of Q3 and Q4.

@@ -90,9 +90,45 @@ job. Report the violation count as the finding; do not fix them as part of the r
 
 ## Q2. Is there dead code anywhere in the repo? (recommended: no)
 
-Five different things, and they need different evidence:
+**Start with `scripts/dead-code.py`** (run by `repo-inventory.sh`), which answers the two
+mechanical halves of this question for **Python and TypeScript/JavaScript** with no dependency on
+anything being installed:
 
-1. **Unreferenced functions, classes, exports.** Tools first:
+```bash
+scripts/dead-code.py --repo <repo> --out <scratch>     # add --entry <roots> if it says to
+```
+
+It resolves the import graph — relative paths, tsconfig `paths`, bundler module roots
+(`from 'src/components/X'`), workspace package names, `export *` barrels, `from x import *` —
+walks it from every entry point it can find, and reports:
+
+| Finding | What it means |
+|---|---|
+| **Unreachable file** (high) | No importer anywhere, and not an entry point. The strongest result this produces |
+| **Unreachable cluster** (high) | Imported, but only by files that are themselves unreachable — delete them together or not at all |
+| **Reached only from tests** (medium) | The product never uses it; its test is keeping it alive. Delete both, in one commit |
+| **Unreferenced definition** (high for a `_private` name, else medium) | The name appears in no other file, in any form — identifier, attribute, or string |
+| **Exported but never imported** | Not dead, but the `export` / public name is. Narrowing it is what lets the next run see more |
+| **Excluded, with the reason** | What the pass declined to call dead: a decorator, `__all__`, a name in a template or a config string, a module loaded by name, a star-import, a framework-conventional path |
+
+Two things to read before quoting any of its numbers:
+
+- **The excluded list is the interesting half.** Each row names the reason, and the reason is what
+  a reviewer checks. A row you disagree with is a finding the tool suppressed.
+- **`entry_point_discovery`**. The script reports what fraction of non-test source the import
+  graph explains, and if that is under 60% it **suppresses the file-level findings entirely** and
+  says so, because at that coverage the unreachable list is mostly an artifact of a root it could
+  not see. That is the moment to pass `--entry <the real roots>` — never the moment to quote the
+  number anyway. Its `unresolved_bare_specifiers` list usually names the cause.
+
+For **every other language** the script says so explicitly and names the tool that does answer
+(`staticcheck -checks U1000`, the Rust compiler's `dead_code` lint, `debride`, `periphery`,
+`phpstan`) — there is no half-guess, and the judgment comes back to you and the reading below.
+
+The rest of the question is not mechanical, and the script does not attempt it:
+
+1. **Unreferenced functions, classes, exports** — the script covers Python and TS/JS; for other
+   languages, tools first:
    ```bash
    npx --no-install knip --reporter compact        # dead files, exports, deps — best for JS/TS
    npx --no-install ts-prune                        # dead exports only
@@ -101,8 +137,8 @@ Five different things, and they need different evidence:
    cargo machete                                    # rust: unused deps
    ```
    By hand, one symbol at a time: `git grep -nw mySymbol | grep -v '^path/where/defined'`.
-2. **Unreferenced files.** A module nothing imports. `knip` finds these; otherwise cross the
-   file list against the import graph.
+2. **Unreferenced files.** A module nothing imports — `dead-code.py` for Python and TS/JS,
+   `knip` for JS/TS if it is installed, otherwise cross the file list against the import graph.
 3. **Commented-out code.** Runs of five or more comment lines that are clearly code:
    ```bash
    git grep -nE '^\s*(//|#)\s*(if|for|while|return|def |class |function |const |let |var |import |from |self\.|this\.)' | wc -l
@@ -112,7 +148,9 @@ Five different things, and they need different evidence:
 5. **Dead dependencies**: declared, never imported. `knip`, `depcheck`, `cargo machete`,
    `pip-extra-reqs`.
 
-Before calling anything dead, rule out **the ways code gets called without an import**: route
+Before calling anything dead — including anything `dead-code.py` reported — rule out **the ways
+code gets called without an import**. The script already excludes the ones it can see, and names
+each exclusion; these are the rest: route
 decorators (`@app.get`, `@Controller`), DI containers and autowiring, CLI entry points
 (`[project.scripts]`, `package.json#bin`), Django `settings`/`urls`, template and JSX string
 references, serializers resolved by name, reflection, dynamic `importlib.import_module` /
@@ -128,7 +166,10 @@ What good looks like: no dead exports reported by the language's tool, `TODO`/`F
 the low tens with owners or issue links, no commented-out blocks (git history is the archive).
 
 The fix: delete it. Not comment it out, not `@deprecated` it — delete it, in one commit per
-area, with the tool's output in the commit message. If the team is nervous, delete behind one
+area, with the tool's output in the commit message. Take the unreachable **files** first: they
+are the highest-confidence result and the largest line count per decision, and a cluster deletes
+as one commit. `--fail-on high` turns a clean result into a CI ratchet once the repo is at zero,
+which is what stops it coming back. If the team is nervous, delete behind one
 release of monitoring on the log line that says it was reached.
 
 ## Q3. Do endpoints correctly require authentication *and* authorization? (recommended: yes)

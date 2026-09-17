@@ -71,6 +71,8 @@ fi
 
 echo "== import graph (Q8) =="
 python3 "$HERE/import-graph.py" --repo "$REPO" --out "$OUT" $EXARGS | tee "$OUT/import-graph.txt"
+echo "== dead code (Q2) =="
+python3 "$HERE/dead-code.py" --repo "$REPO" --out "$OUT" $EXARGS | tee "$OUT/dead-code.txt"
 echo "== endpoints (Q3/Q4) =="
 python3 "$HERE/find-endpoints.py" --repo "$REPO" --out "$OUT" $EXARGS | tee "$OUT/endpoints.txt"
 echo "== duplicate blocks (Q5) =="
@@ -84,5 +86,7 @@ python3 "$HERE/quality-digest.py" "$REPO" "$OUT"
 echo
 echo "Read $OUT/DIGEST.md first; the JSON and tool-*.txt next to it are the evidence."
 echo "Q17 (the coverage %) still needs the suite run with coverage on, Q18 needs each ruleset's"
-echo "rules[].type and bypass_actors read, and every Q22 row is a lead that needs the file opened"
-echo "and the false-positive list worked — all three are in references/quality-checklist.md."
+echo "rules[].type and bypass_actors read, and every Q2 and Q22 row is a lead that needs the file"
+echo "opened and the false-positive list worked — all in references/quality-checklist.md."
+echo "If the Q2 pass said ENTRY-POINT DISCOVERY INCOMPLETE, re-run dead-code.py with --entry"
+echo "naming the real roots before quoting any file-level dead-code number."
