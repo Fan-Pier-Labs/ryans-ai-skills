@@ -1,6 +1,6 @@
 # Code review report template
 
-Use this shape. Every one of the twenty-one questions gets a row in the scorecard and a section,
+Use this shape. Every one of the twenty-two questions gets a row in the scorecard and a section,
 even when the answer is "Yes, verified" in one line — a reader checking the review against the
 checklist should never wonder whether a question was skipped. Lead with the worst thing. Write
 for someone who knows the domain but didn't watch you work: what it is, why it matters, what to
@@ -54,6 +54,7 @@ time.>
 | 19 | Clock faked, no fixed sleeps in tests | | Medium | <31 fixed sleeps = 48 s/run; no fake-timer tooling> |
 | 20 | No change-detector tests | | Medium | <4 snapshots over 1k lines; 6 files change in lockstep with their source> |
 | 21 | Baseline TypeScript compiler checks enabled | <n>% / N/A | High below ~70% | <lowest project 14/23; no noUncheckedIndexedAccess anywhere> |
+| 22 | Not re-implementing what a library solves | | **Critical** for crypto/auth/sanitization, else Medium | <hand-rolled CSV + JWT verify; date-fns installed but unused> |
 
 **Answer counts:** <n> Yes · <n> Partial · <n> No · <n> Unknown · <n> N/A
 
@@ -290,6 +291,32 @@ protection. Close with the wave plan: the measured error count per missing flag
 (`npx tsc --noEmit -p <tsconfig> --<flag> 2>&1 | grep -cE 'error TS'`), which ones are zero and
 can be committed as a ratchet today, and which one to fix first.>
 
+## Q22. Re-implementing what a library solves — <Answer>
+
+| Hand-rolled | Where | Edge cases it gets wrong | Library already a dependency? | Replace with | Severity |
+|---|---|---|---|---|---|
+| CSV parsing by `split(',')` | `api/import.ts:40` | quoted fields, embedded newlines | no | the stdlib / a maintained parser | 🟠 High |
+| Password hashing (SHA-1 + salt) | `api/auth.ts:12` | not a KDF; no work factor | no | argon2 / bcrypt | 🔴 Critical |
+
+<Lead with anything already installed and going unused — that row is the cheapest fix in the
+review. Then the 🔴 rows, which are security findings filed under this question and belong in
+"Today", not in a batched cleanup. For each library named, the check that justifies it: last
+release, maintainers, open issues, licence, transitive dependency count, bundle size if it ships
+to a browser — a named package without that check is not a finished recommendation.>
+
+**Vendored / copied library code:** <the `vendor/` or `third_party/` trees and any file with an
+"adapted from <url>" header, whether each looks modified, and what re-syncing or removing it
+costs. These are invisible to `npm audit` and Dependabot, which is the point of listing them.>
+
+**The inverse — dependencies for something trivial:** <micro-packages, and heavy libraries
+imported for one function, with the bundle or supply-chain cost of each.>
+
+**Ruled out, and why:** <the candidates you decided were *not* findings — thin wrappers over a
+library, helpers the runtime now ships an equivalent for, a documented no-dependency policy, a
+library they tried and removed (`git log -S`), the niche where no library exists. Say this
+explicitly: this question's failure mode is a confident recommendation that costs the team a
+migration.>
+
 ---
 
 ## Recommended sequence
@@ -303,7 +330,8 @@ zero-error baseline compiler flags as ratchets>
 package, then `noUncheckedIndexedAccess` as its own PR; replace the <n> fixed sleeps with polls and fake the clock in the expiry tests; delete the
 dead exports knip found>
 **Then (decisions, not fixes):** <split the two 1500-line modules; consolidate the duplicated
-invoice logic; retire the v1 endpoints after 30 days of 410>
+invoice logic; replace the hand-rolled CSV parser and date arithmetic with the libraries named in
+Q22, one per PR, characterization tests first; retire the v1 endpoints after 30 days of 410>
 
 ## Method and caveats
 

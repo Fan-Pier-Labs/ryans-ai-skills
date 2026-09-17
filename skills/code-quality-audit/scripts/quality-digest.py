@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan a repo for the mechanical evidence behind the twenty-one code-quality questions and write
+"""Scan a repo for the mechanical evidence behind the twenty-two code-quality questions and write
 <out>/inventory.json plus <out>/DIGEST.md.
 
   scripts/quality-digest.py <repo> <out>
@@ -1178,6 +1178,319 @@ def render_change_detectors(inv, ctx):
 
 
 
+# --- Q22 -----------------------------------------------------------------------------------
+# Each row: domain, severity, the signal that a hand-rolled implementation is present, the
+# packages that solve it PER ECOSYSTEM, and the edge cases the hand-rolled version misses. The
+# signal is a LEAD, never a verdict — the renderer says so, and the checklist's false-positive
+# list (thin wrappers, stdlib equivalents, documented no-dependency policies) is what turns one
+# into a finding. The package lists exist so the strongest shape can be found mechanically: the
+# library is already installed and the hand-rolled copy exists anyway.
+REINVENTION = [
+    ("password hashing", "CRITICAL",
+     re.compile(r"(?i)(?:md5|sha-?1|sha-?256|createHash|hashlib\.\w+)\b[^\n]{0,80}"
+                r"(?:password|passwd|pwd|credential)|(?:password|passwd|pwd)[^\n]{0,60}"
+                r"(?:md5|sha-?1|sha-?256|createHash|hashlib\.)"),
+     {"js": ["bcrypt", "bcryptjs", "argon2", "@node-rs/argon2", "scrypt-js"],
+      "py": ["passlib", "argon2-cffi", "bcrypt", "werkzeug"],
+      "go": ["golang.org/x/crypto"], "rb": ["bcrypt"], "rs": ["argon2", "bcrypt"],
+      "jvm": ["spring-security-crypto", "bcrypt"], "cs": ["BCrypt.Net-Next"],
+      "php": ["password_hash (built in)"]},
+     "a fast hash is not a KDF: no work factor, no memory hardness"),
+    ("encryption / key material", "CRITICAL",
+     re.compile(r"createCipher\(|createDecipher\(|[\"'](?:aes-\d+-ecb|des-ecb|rc4)[\"']|"
+                r"Math\.random\(\)[^\n]{0,60}(?:token|secret|key|nonce|salt|iv)\b|"
+                r"(?:token|secret|apikey|api_key|nonce|salt)\b[^\n]{0,40}Math\.random\(\)|"
+                r"random\.random\(\)[^\n]{0,40}(?:token|secret|key)"),
+     {"js": ["libsodium-wrappers", "tweetnacl", "sodium-native", "jose", "node:crypto (built in)"],
+      "py": ["cryptography", "pynacl", "secrets (built in)"], "go": ["golang.org/x/crypto"],
+      "rb": ["rbnacl"], "rs": ["ring", "rustls"], "jvm": ["tink", "bouncycastle"],
+      "cs": ["libsodium-net"], "php": ["sodium (built in)"]},
+     "ECB, a reused IV, or a non-cryptographic RNG as entropy"),
+    ("JWT verification", "CRITICAL",
+     re.compile(r"(?:atob\(|b64decode|base64UrlDecode|Buffer\.from\([^)\n]{0,40}base64)"
+                r"[\s\S]{0,200}?\.split\(\s*[\"']\.[\"']\s*\)|"
+                r"\.split\(\s*[\"']\.[\"']\s*\)[\s\S]{0,200}?"
+                r"(?:atob\(|b64decode|base64UrlDecode|Buffer\.from\([^)\n]{0,40}base64)"),
+     {"js": ["jsonwebtoken", "jose", "fast-jwt", "express-jwt"],
+      "py": ["PyJWT", "python-jose", "authlib"], "go": ["github.com/golang-jwt/jwt"],
+      "rb": ["jwt"], "rs": ["jsonwebtoken"], "jvm": ["nimbus-jose-jwt", "java-jwt"],
+      "cs": ["System.IdentityModel.Tokens.Jwt"], "php": ["firebase/php-jwt"]},
+     "decoding is not verifying: alg=none, and exp/aud/iss unchecked"),
+    ("HTML escaping / sanitization", "CRITICAL",
+     # The replacement has to be an entity: `replace(/&/g, '%26')` is URL encoding, and a
+     # CRITICAL row is the worst place to spend a false positive.
+     re.compile(r"replace\(\s*/[&<>\"']/g\s*,\s*[\"']&(?:amp|lt|gt|quot|#\d)|"
+                r"[\"']&(?:amp|lt|gt|quot);[\"'][^\n]{0,60}replace\(|"
+                r"(?:strip|sanitiz|clean)\w*[^\n]{0,30}replace\(\s*/<[^\n]{0,20}/g"),
+     {"js": ["dompurify", "sanitize-html", "xss", "escape-html", "he"],
+      "py": ["bleach", "nh3", "markupsafe"], "go": ["bluemonday"], "rb": ["loofah", "sanitize"],
+      "rs": ["ammonia"], "jvm": ["owasp-java-html-sanitizer"], "cs": ["HtmlSanitizer"],
+      "php": ["HTMLPurifier"]},
+     "an allowlist regex misses one vector, and order of escaping matters"),
+    ("date / duration arithmetic", "HIGH",
+     re.compile(r"86[_,]?400[_,]?000|1000\s*\*\s*60\s*\*\s*60\s*\*\s*24|"
+                r"24\s*\*\s*60\s*\*\s*60\s*\*\s*1000|setDate\(\s*\w+\.getDate\(\)\s*[+-]|"
+                r"setMonth\(\s*\w+\.getMonth\(\)\s*[+-]|\*\s*86400\b|86400\s*\*"),
+     {"js": ["date-fns", "dayjs", "luxon", "@js-joda/core", "temporal-polyfill"],
+      "py": ["pendulum", "arrow", "python-dateutil", "zoneinfo (built in)"],
+      "go": ["time (built in)"], "rb": ["activesupport"], "rs": ["chrono", "time"],
+      "jvm": ["java.time (built in)"], "cs": ["NodaTime"], "php": ["nesbot/carbon"]},
+     "a day is not always 86,400 s (DST), and months are not 30 days"),
+    ("money / decimal arithmetic", "HIGH",
+     # `total` alone is left out on purpose: `x / total * 100` is a percentage, not money, and it
+     # was the only false positive this row produced across the repos it was tested on.
+     re.compile(r"(?i)(?:price|amount|cents|subtotal|balance|invoice|payout|refund)[^\n]{0,40}"
+                r"(?:\*\s*100\b|/\s*100\b|toFixed\(\s*2\s*\))|"
+                r"Math\.round\([^\n]{0,40}(?:price|amount|cents|subtotal|balance)"),
+     {"js": ["dinero.js", "currency.js", "big.js", "decimal.js"],
+      "py": ["decimal (built in)", "py-moneyed"], "go": ["github.com/shopspring/decimal"],
+      "rb": ["money"], "rs": ["rust_decimal"], "jvm": ["BigDecimal (built in)", "joda-money"],
+      "cs": ["decimal (built in)"], "php": ["moneyphp/money", "brick/math"]},
+     "floats lose cents, and the rounding rule has to match the ledger"),
+    ("CSV parsing", "HIGH",
+     re.compile(r"(?i)csv[^\n]{0,60}\.split\(|\.split\(\s*[\"'],[\"']\s*\)[^\n]{0,60}csv|"
+                r"split\(\s*[\"']\\n[\"']\s*\)[^\n]{0,80}split\(\s*[\"'],[\"']\s*\)"),
+     {"js": ["csv-parse", "papaparse", "fast-csv", "csv-parser"],
+      "py": ["csv (built in)", "pandas"], "go": ["encoding/csv (built in)"],
+      "rb": ["csv (built in)"], "rs": ["csv"], "jvm": ["opencsv", "commons-csv"],
+      "cs": ["CsvHelper"], "php": ["league/csv"]},
+     "quoted fields, embedded commas and newlines, BOMs, CRLF"),
+    ("email validation", "MEDIUM",
+     re.compile(r"[/\"'][^\n\"']{0,20}\^?\[[^\]\n]{2,40}\][+*]\s*@|@[^\n]{0,30}\\\.\[[aA]-[zZ]"),
+     {"js": ["validator", "zod", "yup", "joi", "class-validator"],
+      "py": ["email-validator", "pydantic"], "go": ["net/mail (built in)"],
+      "rb": ["truemail"], "rs": ["validator"], "jvm": ["commons-validator"],
+      "cs": ["FluentValidation"], "php": ["egulias/email-validator"]},
+     "plus addressing, subdomains, unicode mailboxes, quoted locals"),
+    ("URL / query-string parsing", "MEDIUM",
+     re.compile(r"split\(\s*[\"']\?[\"']\s*\)[^\n]{0,120}split\(\s*[\"']&[\"']|"
+                r"split\(\s*[\"']&[\"']\s*\)[^\n]{0,80}split\(\s*[\"']=[\"']"),
+     {"js": ["URLSearchParams (built in)", "qs", "query-string"],
+      "py": ["urllib.parse (built in)", "furl", "yarl"], "go": ["net/url (built in)"],
+      "rb": ["uri (built in)"], "rs": ["url"], "jvm": ["java.net.URI (built in)"],
+      "cs": ["System.Uri (built in)"], "php": ["league/uri"]},
+     "the standard library already parses URLs and query strings"),
+    ("semver comparison", "MEDIUM",
+     re.compile(r"(?i)(?:version|semver)\w*[^\n]{0,30}\.split\(\s*[\"']\.[\"']\s*\)"),
+     {"js": ["semver", "compare-versions"], "py": ["packaging"],
+      "go": ["github.com/Masterminds/semver"], "rb": ["gem::version (built in)"],
+      "rs": ["semver"], "jvm": ["semver4j"], "cs": ["NuGet.Versioning"],
+      "php": ["composer/semver"]},
+     "prereleases, build metadata, and the ordering rules in the spec"),
+    ("cron expression parsing", "MEDIUM",
+     re.compile(r"(?i)cron\w*[^\n]{0,60}\.split\(\s*[\"'] [\"']\s*\)|"
+                r"\.split\(\s*[\"'] [\"']\s*\)[^\n]{0,60}(?:minute|hour|dayofmonth|dow)"),
+     {"js": ["cron-parser", "cronstrue", "node-cron"], "py": ["croniter", "APScheduler"],
+      "go": ["github.com/robfig/cron"], "rb": ["fugit"], "rs": ["cron"],
+      "jvm": ["quartz"], "cs": ["Cronos"], "php": ["dragonmantank/cron-expression"]},
+     "ranges, steps, names, @-shorthands, and the day-of-week/day-of-month OR"),
+    ("retry / backoff", "MEDIUM",
+     # Anchored to loop syntax, not to the words: an unanchored version matched the prose in
+     # every docstring that says "retries upon failure".
+     re.compile(r"(?i)\b(?:for|while)\s*\([^\n)]{0,40}\b(?:attempt|retries|retrycount|tries)\b|"
+                r"\bfor\s+\w+\s+in\s+range\([^\n)]{0,30}(?:attempt|retries|tries)|"
+                r"\bwhile\s+[\w.]*(?:attempt|retries|tries)\b|"
+                r"\b(?:attempt|retries|tries)\s*(?:\+\+|\+=\s*1)"),
+     {"js": ["p-retry", "async-retry", "cockatiel"], "py": ["tenacity", "backoff", "urllib3"],
+      "go": ["github.com/cenkalti/backoff", "github.com/avast/retry-go"],
+      "rb": ["retriable"], "rs": ["backoff", "tokio-retry"], "jvm": ["resilience4j"],
+      "cs": ["Polly"], "php": ["spatie/async"]},
+     "no jitter (synchronised retry storms), and retrying non-idempotent calls"),
+    ("deep clone / deep equal / deep merge", "MEDIUM",
+     re.compile(r"JSON\.parse\(\s*JSON\.stringify\(|"
+                r"(?:function|const|def)\s+(?:deepEqual|deepClone|deepMerge|deep_equal|deep_copy|isEqual)\b"),
+     {"js": ["structuredClone (built in)", "lodash.clonedeep", "fast-deep-equal", "dequal", "deepmerge"],
+      "py": ["copy.deepcopy (built in)"], "go": ["reflect.DeepEqual (built in)"],
+      "rb": ["deep_dup (activesupport)"], "rs": ["#[derive(Clone, PartialEq)]"],
+      "jvm": ["apache commons-lang3"], "cs": ["System.Text.Json"], "php": ["deep-copy"]},
+     "cycles, Date/Map/Set, undefined, and prototype pollution"),
+    ("id generation", "MEDIUM",
+     re.compile(r"Math\.random\(\)\.toString\(\s*36\s*\)|[\"']xxxxxxxx-xxxx|"
+                r"(?:function|const)\s+(?:generateId|makeId|uuidv?4)\b"),
+     {"js": ["crypto.randomUUID (built in)", "uuid", "nanoid", "ulid", "@paralleldrive/cuid2"],
+      "py": ["uuid (built in)", "secrets (built in)"], "go": ["github.com/google/uuid"],
+      "rb": ["securerandom (built in)"], "rs": ["uuid"], "jvm": ["java.util.UUID (built in)"],
+      "cs": ["System.Guid (built in)"], "php": ["ramsey/uuid"]},
+     "collision odds and predictability"),
+    ("cache with eviction / TTL", "MEDIUM",
+     re.compile(r"(?i)(?:class|function)\s+\w*(?:lru|lrucache|memorycache)\w*|"
+                r"(?:maxsize|max_size|capacity)[^\n]{0,40}evict|\bevict\w*\("),
+     {"js": ["lru-cache", "quick-lru", "keyv"], "py": ["functools.lru_cache (built in)", "cachetools"],
+      "go": ["github.com/hashicorp/golang-lru"], "rb": ["activesupport"], "rs": ["lru", "moka"],
+      "jvm": ["caffeine"], "cs": ["Microsoft.Extensions.Caching.Memory"], "php": ["symfony/cache"]},
+     "unbounded growth, no stampede protection, and a leak that only shows in production"),
+    ("slugify / unicode text handling", "MEDIUM",
+     re.compile(r"(?i)slug\w*[^\n]{0,60}replace\(|normalize\(\s*[\"']NFD[\"']\s*\)[^\n]{0,80}replace\("),
+     {"js": ["slugify", "@sindresorhus/slugify", "transliteration"],
+      "py": ["python-slugify", "unidecode"], "go": ["github.com/gosimple/slug"],
+      "rb": ["babosa"], "rs": ["slug"], "jvm": ["slugify"], "cs": ["Slugify.Core"],
+      "php": ["cocur/slugify"]},
+     "anything outside ASCII: case folding, combining marks, CJK"),
+    ("debounce / throttle", "LOW",
+     re.compile(r"(?:function|const)\s+(?:debounce|throttle)\s*[=(]"),
+     {"js": ["lodash.debounce", "lodash.throttle", "just-debounce-it", "p-throttle"],
+      "py": ["asyncio (built in)"], "go": ["golang.org/x/time/rate"], "rb": ["concurrent-ruby"],
+      "rs": ["tokio"], "jvm": ["resilience4j"], "cs": ["Rx.NET"], "php": ["symfony/rate-limiter"]},
+     "trailing calls, cancellation, and leading-edge behaviour"),
+    ("command-line argument parsing", "LOW",
+     re.compile(r"(?:process\.argv|sys\.argv)[^\n]{0,80}"
+                r"(?:for |\.forEach|while |\[i\]|startsWith\(\s*[\"']--)"),
+     {"js": ["commander", "yargs", "minimist", "citty"], "py": ["argparse (built in)", "click", "typer"],
+      "go": ["flag (built in)", "github.com/spf13/cobra"], "rb": ["optparse (built in)", "thor"],
+      "rs": ["clap"], "jvm": ["picocli"], "cs": ["System.CommandLine"], "php": ["symfony/console"]},
+     "combined short flags, `--`, `=` forms, negation, and the help text"),
+]
+ECOSYSTEM_MANIFESTS = [
+    ("js", ("package.json",)), ("py", ("pyproject.toml", "requirements.txt", "Pipfile", "setup.py")),
+    ("go", ("go.mod",)), ("rb", ("Gemfile",)), ("rs", ("Cargo.toml",)),
+    ("jvm", ("pom.xml", "build.gradle")), ("cs", ("*.csproj",)), ("php", ("composer.json",)),
+]
+VENDORED_RE = re.compile(r"(^|/)(vendor|vendored|third_party|thirdparty|3rdparty|external|externals)/")
+COPIED_FROM_RE = re.compile(r"(?i)(copied|adapted|taken|vendored|forked|borrowed)\s+from\s+"
+                            r"(the\s+)?(https?://|[`'\"]?[\w.-]+/[\w.-]+)|"
+                            r"based on (the )?https?://|originally (from|written by)")
+# Packages whose whole body is one expression. A dependency here is supply-chain surface bought
+# for nothing — the inverse of this question, and a finding on the same axis.
+MICRO_PACKAGES = {
+    "is-odd", "is-even", "is-number", "is-string", "is-array", "isarray", "is-plain-object",
+    "left-pad", "pad-left", "pad-right", "right-pad", "is-promise", "is-nan", "is-negative",
+    "is-positive", "object-assign", "array-flatten", "is-buffer", "is-windows", "has-flag",
+    "is-obj", "is-regexp", "is-fullwidth-code-point", "is-primitive", "even", "odd", "is-upper-case",
+}
+
+
+def scan_reinvention(ctx):
+    T, prod_src, deps, root, files = ctx.T, ctx.prod_src, ctx.deps, ctx.root, ctx.files
+    dep_lc = {d.lower() for d in deps}
+    ecos = [e for e, names in ECOSYSTEM_MANIFESTS if any(ctx.manifests.get(n) for n in names)]
+
+    domains = []
+    for name, sev, rx, libs, edge in REINVENTION:
+        seen, hits = set(), []
+        for f in prod_src:
+            t = T(f)
+            for m in rx.finditer(t):
+                line = t.count("\n", 0, m.start()) + 1
+                if (f, line) in seen:          # one line, one hit: two matches on it prove nothing extra
+                    continue
+                seen.add((f, line))
+                hits.append({"file": f, "line": line,
+                             "excerpt": t[m.start():m.start() + 90].split("\n")[0].strip()})
+            if len(hits) >= 60:
+                break
+        if not hits:
+            continue
+        all_libs = {l for v in libs.values() for l in v}
+        installed = sorted({l for l in all_libs if l.lower() in dep_lc})
+        cands = [l for e in (ecos or list(libs)) for l in libs.get(e, [])]
+        domains.append({"domain": name, "severity": sev, "edge_cases": edge,
+                        "hits": len(hits), "worst": hits[:6],
+                        "files": sorted({h["file"] for h in hits})[:10],
+                        "library_already_installed": installed,
+                        "candidate_libraries": cands[:6]})
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    domains.sort(key=lambda d: (not d["library_already_installed"], order[d["severity"]], -d["hits"]))
+
+    # vendor/, third_party/ and external/ are excluded from every other count in this review, so
+    # they are not in ctx.files at all. For this question they ARE the evidence: ask git directly.
+    r = subprocess.run(["git", "-C", root, "ls-files", "-z"], capture_output=True)
+    tracked = [x for x in r.stdout.decode("utf-8", "replace").split("\0") if x] if r.returncode == 0 else list(files)
+    vendored = collections.Counter()
+    for f in tracked:
+        m = VENDORED_RE.search(f)
+        if m and "node_modules" not in f:
+            vendored[f[:m.end()]] += 1
+    copied = []
+    for f in prod_src:
+        m = COPIED_FROM_RE.search(T(f))
+        if m:
+            copied.append({"file": f, "line": T(f).count("\n", 0, m.start()) + 1,
+                           "excerpt": T(f)[m.start():m.start() + 110].split("\n")[0].strip()})
+
+    # Where reinvention lives: a utility module importing nothing is doing all of it by hand, and
+    # the shapes no regex finds (a homegrown state machine, template engine, diff) are in there.
+    IMPORT_RE = re.compile(r"^[ \t]*(?:import\s|from\s+[\w.]+\s+import\s|"
+                           r"(?:const|let|var)\s+[\w{},* ]+=\s*require\()", re.M)
+    LOCAL_SPEC_RE = re.compile(r"[\"'](?:\.|@/|~/|#|src/)")
+    UTIL_DIR_RE = re.compile(r"(^|/)(utils?|lib|libs|helpers?|common|shared|misc)/")
+    self_contained = []
+    for f in prod_src:
+        if is_test(f) or ctx.line_count.get(f, 0) < 40:
+            continue
+        if not (UTIL_DIR_RE.search(f) or re.search(r"(^|/)(utils?|helpers?|common)\.\w+$", f)):
+            continue
+        t = T(f)
+        if any(not LOCAL_SPEC_RE.search(t[m.start():m.start() + 200]) for m in IMPORT_RE.finditer(t)):
+            continue
+        self_contained.append({"file": f, "lines": ctx.line_count.get(f, 0)})
+    self_contained.sort(key=lambda x: -x["lines"])
+
+    return {"reinvention": {
+        "ecosystems": ecos,
+        "domains": domains,
+        "vendored_trees": sorted(vendored.items(), key=lambda x: -x[1])[:10],
+        "copied_from_headers": copied[:10],
+        "micro_packages_depended_on": sorted(d for d in deps if d.lower() in MICRO_PACKAGES),
+        "self_contained_utility_modules": self_contained[:12]}}
+
+
+def render_reinvention(inv, ctx):
+    """Q22. Not re-implementing what a maintained library already solves (recommended: no)"""
+    md = []
+    rv = inv["reinvention"]
+    already = [d for d in rv["domains"] if d["library_already_installed"]]
+    if already:
+        md.append("- **Library already a dependency, hand-rolled version present anyway** — the cheapest "
+                  "fix in the review, and the argument is already won:")
+        for d in already:
+            md.append(f"  - **{d['domain']}** ({d['severity']}): `{'`, `'.join(d['library_already_installed'])}` "
+                      f"is installed, but {d['hits']} hand-rolled site(s) in {', '.join(d['files'][:4])}")
+    if rv["domains"]:
+        md.append("")
+        md.append("| Domain | Sev | Sites | First site | Already installed | Candidates | What the hand-rolled version misses |")
+        md.append("|---|---|---|---|---|---|---|")
+        for d in rv["domains"]:
+            more = f" +{len(d['files']) - 1} file(s)" if len(d["files"]) > 1 else ""
+            have = "`" + "`, `".join(d["library_already_installed"]) + "`" if d["library_already_installed"] else "—"
+            md.append(f"| {d['domain']} | {d['severity']} | {d['hits']} | "
+                      f"{d['worst'][0]['file']}:{d['worst'][0]['line']}{more} | {have} | "
+                      f"{', '.join(d['candidate_libraries'][:4])} | {d['edge_cases']} |")
+        md.append("")
+        for d in rv["domains"][:6]:
+            md.append(f"- {d['domain']}:")
+            for h in d["worst"][:3]:
+                md.append(f"  - {h['file']}:{h['line']}  `{h['excerpt'][:80]}`")
+    else:
+        md.append(f"- No hand-rolled implementation matched any of the {len(REINVENTION)} domains "
+                  "scanned. That is a weak signal, not a Yes — read the utility modules below first.")
+    if rv["vendored_trees"]:
+        md.append("- **Vendored library trees** (excluded from every other count in this review, and "
+                  "invisible to `npm audit` / Dependabot — a fork nobody re-syncs): "
+                  + ", ".join(f"`{p}` ({n} file{'s' if n != 1 else ''})" for p, n in rv["vendored_trees"]))
+    if rv["copied_from_headers"]:
+        md.append("- **Copied-from headers** — same problem, one file at a time:")
+        for c in rv["copied_from_headers"][:6]:
+            md.append(f"  - {c['file']}:{c['line']}  `{c['excerpt'][:90]}`")
+    if rv["micro_packages_depended_on"]:
+        md.append("- **The inverse — dependencies whose whole body is one expression**: "
+                  + ", ".join(f"`{p}`" for p in rv["micro_packages_depended_on"])
+                  + ". Supply-chain surface bought for nothing.")
+    if rv["self_contained_utility_modules"]:
+        md.append("- Utility modules importing nothing external — where reinvention lives, and the "
+                  "files to read for the shapes no regex finds (a homegrown state machine, template "
+                  "engine, query builder or diff):")
+        for x in rv["self_contained_utility_modules"][:8]:
+            md.append(f"  - {x['lines']:>5} lines  {x['file']}")
+    md.append("- Every row above is a **lead**. Before any of it becomes a finding, work the "
+              "checklist's false-positive list: a thin wrapper is a seam, not a reinvention; the "
+              "runtime may now ship it (`crypto.randomUUID`, `structuredClone`, `Intl`, `URL`, "
+              "`zoneinfo`); a no-dependency policy may be written down; they may have tried the "
+              "library and removed it (`git log -S'<pkg>' -- package.json`).")
+    md.append("- Before naming any replacement, check it: last release, maintainers, open issues, "
+              "licence, transitive dependency count, bundle size. An abandoned package is a worse "
+              "trade than the hand-rolled code.")
+    return md
+
 def render_analyzers(inv, ctx):
     """Analyzer outputs present"""
     tools = ctx.tools
@@ -1208,6 +1521,7 @@ SECTIONS = [
     ("Q19. Tests do not wait on real-world time; the clock is faked (recommended: yes)", render_real_time),
     ("Q20. No change-detector tests (recommended: none)", render_change_detectors),
     ("Q21. Baseline TypeScript compiler-check coverage (recommended: 100%)", render_ts_checks),
+    ("Q22. Not re-implementing what a maintained library already solves (recommended: no)", render_reinvention),
     ("Analyzer outputs present", render_analyzers),
 ]
 
@@ -1233,12 +1547,13 @@ def main():
     inv.update(scan_dead_code(ctx))
     inv.update(scan_types(ctx, inv))
     inv.update(scan_readme(ctx))
+    inv.update(scan_reinvention(ctx))
     inv["analyzer_outputs"] = ctx.tools
     with open(os.path.join(out, "inventory.json"), "w") as fh:
         json.dump(inv, fh, indent=1, default=str)
 
     md = [f"# Code quality inventory — `{root}` — {inv['date']}", "",
-          "Mechanical evidence for the twenty-one questions in `references/quality-checklist.md`. "
+          "Mechanical evidence for the twenty-two questions in `references/quality-checklist.md`. "
           "Every line here is a pointer: open the file before you cite it. "
           "Suggested answers are mechanical and can be wrong in both directions.", ""]
     for title, renderer in SECTIONS:
