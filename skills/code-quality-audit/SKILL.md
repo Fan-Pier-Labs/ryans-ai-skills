@@ -1,13 +1,13 @@
 ---
 name: code-quality-audit
-description: Review a whole repository's code quality against sixteen concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI gate every PR, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, and what percent of a baseline ESLint rule set is enabled — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, unauthenticated endpoints, or which eslint rules they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
+description: Review a whole repository's code quality against twenty concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, and are there change-detector tests — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, or which eslint rules they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
 ---
 
 # Repo Code Review
 
 The question is not "is this diff good" (that is `auto-reviewer`, which reviews one PR at a
 time). It is: **is this codebase one a team can keep working in, and what would a careful
-senior engineer flag on day one?** Sixteen questions, each with a recommended answer. The
+senior engineer flag on day one?** Twenty questions, each with a recommended answer. The
 report is a scorecard with evidence a founder can hand to a new engineering lead, or a buyer
 can use in technical due diligence.
 
@@ -22,13 +22,17 @@ can use in technical due diligence.
 | 7 | Are there **integration tests**? | Yes |
 | 8 | Is the module graph **generally a DAG**? | Yes |
 | 9 | Are **types** set up? | Yes |
-| 10 | Does **CI gate every PR** on lint, types, and tests? | Yes — blocking |
+| 10 | Does **CI exist**, and gate every PR on lint, types, unit tests, integration tests and coverage? | Yes — blocking |
 | 11 | Are **secrets committed** to the repo? | No |
 | 12 | Is a **lockfile committed** and are dependencies audited? | Yes |
 | 13 | Are there **oversized files** (over ~1000 lines)? | No |
 | 14 | Are **errors swallowed** (empty catch, bare except, ignored `err`)? | No |
 | 15 | Does the **README** explain setup, run, and test? | Yes |
 | 16 | What percent of the **baseline ESLint rules** are enabled? (TS/JS) | 100% |
+| 17 | Is **test coverage** at least 80% on lines and branches, and is the threshold enforced? | Yes |
+| 18 | Is the default branch protected from **force-push and deletion**? | Yes |
+| 19 | Do tests **wait on real-world time**, or is the clock faked? | Faked — no fixed sleeps |
+| 20 | Are there **change-detector tests** (fail on any change, prove nothing)? | No |
 
 `references/quality-checklist.md` has, for each question: how to detect it in each language
 (with the exact commands), why it matters, what good looks like, and the fix. Questions 3 and 4
@@ -68,6 +72,10 @@ Run in order. Load `references/quality-checklist.md` when you reach step 3; load
 - Confirm **which repo and which branch**: `git -C <repo> rev-parse --abbrev-ref HEAD`,
   `git remote get-url origin`, `git log -1 --format='%h %as %an'`. Default to the current
   working directory. Never review a repo the user has not named or implied.
+- If the remote is GitHub and `gh` is authenticated, read the repository settings once here —
+  they answer Q10 and Q18 and nothing else in the review depends on them:
+  `gh api repos/<o>/<r>/branches/<default>/protection`, `gh api repos/<o>/<r>/rulesets`. A `404
+  Branch not protected` is itself a finding, not an error to work around.
 - Ask, or read from `CLAUDE.md` / `README.md`: what the product is, what is in scope (a
   monorepo may have one package that matters), and **whether the app has authentication at
   all**. Q3 and Q4 are N/A for a library or CLI, and saying so is a real answer.
@@ -112,7 +120,7 @@ anything and never passes `--fix`). Read `DIGEST.md` first. Every line in it is 
 not a verdict: open the file before you cite it. The output directory must be outside the
 repo or gitignored.
 
-### 3. Answer the sixteen questions
+### 3. Answer the twenty questions
 
 Work through `references/quality-checklist.md` in order. For each question write:
 
@@ -135,17 +143,31 @@ Rules that keep this honest:
 - **Unknown is an answer.** Say what access or artifact would have resolved it (production
   access logs, the mobile client's repo, a passing test run).
 
-### 4. Run the test suite, don't just count test files
+### 4. Run the test suite with coverage on, don't just count test files
 
 ```bash
 npm test 2>&1 | tail -30        # or: pytest -q, go test ./..., cargo test, bundle exec rspec
+# then the same suite with coverage, for Q17 — the number must be measured, never estimated
+npx --no-install vitest run --coverage 2>&1 | tail -20
+pytest --cov --cov-branch --cov-report=term-missing -q 2>&1 | tail -25
+go test -covermode=atomic -coverprofile=/tmp/c.out ./... >/dev/null 2>&1 && go tool cover -func=/tmp/c.out | tail -1
 ```
 
 A suite that does not pass on a clean checkout is a finding in its own right, and it caps the
-value of Q6 and Q7 at "tests exist but do not run". Run unit tests freely; run integration
-tests only if they need no external service, no credentials, and no network write — otherwise
-report them as present but not executed, and say what they would need. Never run a test suite
-that seeds or migrates a database you did not create.
+value of Q6, Q7 and Q17 at "tests exist but do not run" — coverage of a failing suite is a
+meaningless number. Run unit tests freely; run integration tests only if they need no external
+service, no credentials, and no network write — otherwise report them as present but not
+executed, and say what they would need. Never run a test suite that seeds or migrates a
+database you did not create.
+
+For Q17, record line **and** branch coverage, read the include/exclude list before quoting any
+figure, and get per-file numbers so the report can name the lowest-covered files that matter
+rather than only the headline percentage. If coverage cannot be produced, the answer is Unknown
+with the reason — never an estimate.
+
+While the suite runs, capture what Q19 needs: the wall-clock duration and the slowest tests, from
+the runner's own per-test timing. A suite whose slowest tests are all waiting on fixed durations is
+the finding, and the seconds are the argument.
 
 ### 5. Judge structure with the codebase in front of you
 
@@ -155,6 +177,9 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
   you have not read a file, you cannot say it should be split.
 - For every duplicate group, decide whether extracting it is actually an improvement.
   Two similar-looking validators for two different domains are not duplication.
+- Open the two or three largest test files and ask what breaks them. A test that has to change
+  whenever the implementation changes is Q20's finding, and it is only visible by reading; no tool
+  reports it. The git history's lockstep ratio tells you which files to open first.
 - For every dead-code candidate, check the ways a framework calls code without an import:
   route decorators, DI containers, CLI entry points in `pyproject.toml` /
   `package.json#bin`, Django `settings`, template references, reflection, dynamic
@@ -163,7 +188,7 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
 
 ### 6. Write the report
 
-Use `references/report-template.md`: summary → scorecard (all sixteen rows, always) → one
+Use `references/report-template.md`: summary → scorecard (all twenty rows, always) → one
 section per question → the top findings ranked by severity → a recommended sequence → method
 and caveats. Lead with the worst thing. A "Yes, verified" is one line; do not pad it. A "No"
 without a fix, or a fix without the command, is not finished.
@@ -173,7 +198,7 @@ Severity, applied consistently:
 | Severity | Meaning |
 |---|---|
 | 🔴 Critical | Live exposure or data loss: an unauthenticated endpoint that reads or writes user data, a committed live credential, no backups of anything the code is the only copy of. |
-| 🟠 High | The team will hit this soon and it will hurt: no tests around money or auth, no CI gate, types disabled, a circular core that makes every change risky. |
+| 🟠 High | The team will hit this soon and it will hurt: no tests around money or auth, no CI gate, an unprotected default branch anyone can force-push, types disabled, a circular core that makes every change risky. |
 | 🟡 Medium | Real maintenance cost: duplication, dead code, oversized files, swallowed errors, missing lint rules. |
 | 🟢 Low / Good | Nits, and things that are genuinely fine. Say what is good, but only what is earned. |
 
@@ -209,6 +234,14 @@ that change and nothing else. Never batch fixes across questions.
 | "The file is 3000 lines but it's generated / a schema." | Generated and vendored files are out of scope entirely. Exclude them from every count, and say you did. |
 | "I'll report duplication as a percentage." | Only if a tool measured it on non-vendored, non-generated code. Otherwise report the groups you found and where. |
 | "I couldn't run the linter, so I'll estimate the violations." | Never. "Not installed, not run" is the honest answer. |
+| "There's a `tests` job in CI, so Q10 is a Yes." | Check that it is *required* by branch protection, that no `if:`/`paths:` filter skipped it on the last merged PRs, and that the command it runs is the one carrying the coverage gate. A required check whose steps did not execute is green and worthless. |
+| "Coverage is 84%, so Q17 is a Yes." | Only with a threshold enforcing it, branch coverage in the same range, and no critical module far below the average. 84% with the auth path at 0% and no gate is a Partial. |
+| "There's a coverage badge saying 91%." | Reproduce it or report Unknown. Badges go stale, and they usually report lines on a favourable include list. |
+| "The tests use timeouts, so Q19 is a No." | A poll with a deadline returns as soon as the condition holds and costs nothing; a fixed sleep pays every time. Judge the mechanism, not the number, and report the total duration of the fixed ones. |
+| "The suite is fast, so Q19 is a Yes." | Or the time-dependent behaviour is not tested at all, which is the same absence wearing a better number. If there is expiry, backoff or scheduling logic and no clock-faking anywhere, say so. |
+| "Snapshots are tests, so coverage is real." | A snapshot nobody reads is approved by regenerating it. Report snapshot count and size, and whether the scripts update them as a habit (Q20). |
+| "The mock was asserted, so the behaviour is tested." | Verifying an internal collaborator pins the call graph, not the behaviour. Only a boundary you own — a message actually sent — is a real contract. |
+| "The branch is protected, so Q18 is a Yes." | Protection and immutability are separate settings. Read `allow_force_pushes`, `allow_deletions`, and whether `enforce_admins` is on or a ruleset has a standing `bypass_actors` entry — in a small team where everyone is an admin, protection without those is decorative. |
 | "Their eslint config is long, so Q16 is high." | Length is not coverage. Resolve the effective config with `eslint --print-config` and diff rule names against the baseline — most rules arrive through presets, and a long config can still miss the whole promise group. |
 | "The type-aware rules are in their config, so they're on." | Half the baseline needs `projectService`/`project` and installed dependencies. Without them the rules load, match nothing, and look enabled. Check, and report the percentage as nominal if they aren't resolving types. |
 
@@ -233,8 +266,10 @@ tools are installed — so the next review is a re-run, not a rediscovery.
 - `scripts/dup-blocks.py` — normalised-window duplicate detector with no dependencies; Q5.
 - `scripts/quality-digest.py` — the config/test/CI/secret/type/size/error scans and the
   `DIGEST.md` writer. Pure read.
-- `references/quality-checklist.md` — the sixteen questions: per-language detection commands,
-  why each matters, what good looks like, and the fix. Read during step 3.
+- `references/quality-checklist.md` — the twenty questions: what to look at, why each matters,
+  what good looks like, and the fix. Deliberately kept above per-language tooling detail: it
+  carries the false positives, thresholds and judgment calls, not an ecosystem tutorial. Read
+  during step 3.
 - `references/eslint-baseline.config.mjs` — the 105-rule baseline Q16 measures against, with the
   reasoning kept on every rule and the wave-adoption method in its header. Read for Q16, and
   hand it to the user as the thing to copy into their repo.
