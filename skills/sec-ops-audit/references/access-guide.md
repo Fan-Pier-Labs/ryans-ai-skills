@@ -46,7 +46,7 @@ One file per system, `members-<system>.json`:
 `ownership-<system>.json`:
 
 ```json
-{"system": "aws", "account": "555985150976", "display_name": "Company Prod",
+{"system": "aws", "account": "123456789012", "display_name": "Company Prod",
  "primary_email": "aws-root@company.com", "billing_email": "billing@company.com",
  "owner_identity": "ada@company.com", "source": "api", "notes": ["org management account"]}
 ```
