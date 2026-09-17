@@ -62,6 +62,9 @@ infra-audit both do this).
    The contract: given `repo`, `pr`, `head sha`, (a) skip the discovery
    sweep, (b) the one command that checks the idempotency rule for this
    head (usually a marker-comment lookup), (c) the one-PR procedure.
+   Add a **Merged-PR invocation** section too if the skill has follow-up
+   work once a PR lands — that is the contract a `kind: merged` item from
+   pr-watcher dispatches against, and without it merges are skipped.
 5. **Report** — what to say at the end, and in what order.
 6. **Guardrails** — bulleted, each one a hard rule: what it writes, what it
    never does, the cost cap, the idempotency rule.
@@ -82,6 +85,11 @@ infra-audit both do this).
   loop. A shared script takes **arguments**, not a set of env vars the
   caller exports — a flag the call site spells out beats a knob defined
   elsewhere. Read `skills/shared/README.md` before adding a script.
+- **No skill runs its own timer.** A PR-reactive skill is one sweep that
+  exits, plus a "Single-PR invocation" contract; continuous coverage comes
+  from `/pr-watcher run /<name>`, which is webhook-driven and falls back to
+  polling only when a repo won't grant a webhook. Never write a sleep-and-
+  re-sweep loop, a `/loop` instruction, or a `ScheduleWakeup` into a skill.
 - **Env**: `REPOS`, `OWNERS`, `DAYS`, `MARKER` on every discovery script;
   `STATE_DIR` under `~/.cache/generic-coding-agents/<name>` if the skill
   keeps state.
@@ -104,9 +112,12 @@ infra-audit both do this).
 
 Three edits, every time:
 
-1. A row in the skills table: `| [<name>](skills/<name>/SKILL.md) | what it does | cadence |`.
-   Cadence is one of: `on demand`, `continuous loop, ~N min`, `while the
-   session runs`, `on demand / weekly`, `every ~N min, or on PR events via pr-watcher`.
+1. A row in the skills table of the right section. The **background agents**
+   table is two cells — `| [<name>](skills/<name>/SKILL.md) | what it does |`
+   — and has no cadence column on purpose: nothing there runs on a timer, so
+   every cell would have said the same thing. The other three tables carry a
+   third cell, one of `on demand`, `on demand / weekly`,
+   `on demand / <the occasion>`.
 2. The name appended to the `for s in …` install loop.
 3. The skill count in the README's first sentence, and the composition
    paragraph at the end if the skill feeds or consumes another one.

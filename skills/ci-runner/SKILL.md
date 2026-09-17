@@ -1,6 +1,6 @@
 ---
 name: ci-runner
-description: Run CI locally for every open pull request in the current repo (or the repos/orgs given via REPOS/OWNERS) — a stand-in for GitHub Actions while the account is out of CI credits. Executes each repo's own .github/workflows YAML on this machine via a workflow interpreter, several PRs in parallel, and posts the result back as a commit status (plus a log comment on failure). Runs either on an interval or driven by GitHub webhook deliveries. Use whenever the user asks to run CI on PRs, "check if my PRs pass", start the CI agent, run tests across open PRs, or mentions GitHub Actions being out of credits/minutes.
+description: Run CI locally for every open pull request in the current repo (or the repos/orgs given via REPOS/OWNERS) — a stand-in for GitHub Actions while the account is out of CI credits. Executes each repo's own .github/workflows YAML on this machine via a workflow interpreter, several PRs in parallel, and posts the result back as a commit status (plus a log comment on failure). Driven by GitHub webhook deliveries through /pr-watcher rather than a timer; interval sweeps are the fallback for a repo that will not grant a webhook or a machine with no live session. Use whenever the user asks to run CI on PRs, "check if my PRs pass", start the CI agent, run tests across open PRs, or mentions GitHub Actions being out of credits/minutes.
 ---
 
 # CI Runner Agent
@@ -13,10 +13,10 @@ one script does everything, and once started it needs no model judgment:
 scripts/ci-runner.sh          # one full sweep over the target repos (default: the current repo)
 ```
 
-`ci-runner.sh` is one sweep and exits. To run CI the moment a PR changes,
-use `/pr-watcher run /ci-runner` — the shared watcher — rather than a loop.
-Discovery and execution are separate modes, so any trigger can drive the same
-executor:
+`ci-runner.sh` is one sweep and exits — it has no loop of its own, by design.
+To run CI the moment a PR changes, use `/pr-watcher run /ci-runner`: the shared
+watcher turns each webhook delivery into one `--run-one` call. Discovery and
+execution are separate modes, so any trigger drives the same executor:
 
 | Mode | What it does |
 | --- | --- |
@@ -78,20 +78,27 @@ is the result; with no parent sweep there is no summary table.
 
 ## Running it continuously
 
-**Preferred: `/pr-watcher run /ci-runner`.** The shared watcher (see
-[../pr-watcher/SKILL.md](../pr-watcher/SKILL.md)) reacts to GitHub webhook
-deliveries — polling if the repo won't grant a webhook — and calls `--run-one`
-for each changed PR. One watcher serves every skill attached to it.
+**This is how: `/pr-watcher run /ci-runner`.** The shared watcher (see
+[../pr-watcher/SKILL.md](../pr-watcher/SKILL.md)) catches up on the PRs open
+now, then reacts to GitHub webhook deliveries and calls `--run-one` per changed
+PR. One watcher serves every skill attached to it, and CI starts seconds after
+a push instead of up to an interval later. Do not wrap `ci-runner.sh` in
+`/loop` to get continuous coverage — that is the watcher's job.
 
-**Alternative: sweep on an interval.** `ci-runner.sh` is single-sweep by
-design, so looping is the harness's job — `/loop 15m` in Claude Code, or cron:
+**Fallback: sweep on an interval.** Only for the two cases a webhook cannot
+cover — the repo won't grant one (the watcher says `MODE=polling` and why), or
+there is no live session at all, because a delivery can only reach a running
+agent. Then `ci-runner.sh` is single-sweep by design and looping is the
+harness's job — cron:
 
 ```bash
 */15 * * * * REPOS='owner/repo' /path/to/generic-coding-agents/skills/ci-runner/scripts/ci-runner.sh >> ~/.cache/generic-coding-agents/ci-runner/sweep.log 2>&1
 ```
 
 Size the interval above the sweep's wall-clock time, or ticks overlap. With
-`JOBS=4` a sweep costs roughly `ceil(PRs / 4) x per-PR time`.
+`JOBS=4` a sweep costs roughly `ceil(PRs / 4) x per-PR time`. The `local-ci`
+status is the only ledger, so a cron sweep and a watcher can run at once
+without duplicating work — whichever gets to a head first, the other skips it.
 
 For the Events-API ETag option and a fully local mirror-based architecture,
 see [README.md](README.md) in this directory.

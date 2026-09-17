@@ -1,6 +1,6 @@
 ---
 name: pr-demo-media
-description: Scan open, non-draft frontend pull requests in the current repo (or the repos/orgs given via REPOS/OWNERS), spin up each PR's app, capture the new feature — a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes — and post the media on the PR with `gh pr comment --attach`. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
+description: Demo frontend pull requests — spin up each PR's app and capture the new feature as a Playwright-recorded video for interactive changes or screenshots (before/after when possible) for visual/static changes, then post the media on the PR with `gh pr comment --attach`. Driven by GitHub webhook deliveries through /pr-watcher rather than a timer; invoked on its own it runs one catch-up sweep of the open, non-draft frontend PRs in the current repo (or the repos/orgs given via REPOS/OWNERS) and stops. Use whenever the user asks to demo a PR, record or screenshot a feature, post a demo/video/picture to a PR, run the video agent, or wants demos across all open PRs.
 ---
 
 # PR Demo Media Agent
@@ -13,8 +13,8 @@ better — and posts it as an embedded PR comment via `gh pr comment --attach`.
 **If the target repo has its own
 `.claude/skills/pr-demo-*` skill, read it and follow its repo-specific parts**
 (launch commands, test credentials, iOS/CLI paths) — it knows things this
-generic skill can't. This skill supplies the loop, the media decision, and the
-generic web flow. Uploads always go through step 6 below, whatever an
+generic skill can't. This skill supplies the trigger, the media decision, and
+the generic web flow. Uploads always go through step 6 below, whatever an
 older repo skill says.
 
 ## Which repos
@@ -27,7 +27,18 @@ are expanded to their repos pushed within `DAYS`). If the script exits with
 target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
 scan their account.
 
-## The loop
+## How it runs
+
+**On PR events, never on a timer.** Continuous coverage is
+`/pr-watcher run /pr-demo-media`: the watcher catches up on the PRs open now,
+then queues each one again on its `push` / `pull_request` webhook delivery and
+invokes this skill per PR through
+[Single-PR invocation](#single-pr-invocation). Polling is the watcher's
+fallback for a repo that will not grant a webhook, and it says so when it
+degrades to it.
+
+Invoked on its own (`/pr-demo-media`, no watcher), this is **one sweep, then
+stop** — the catch-up half of the same work:
 
 1. `scripts/find-demo-candidates.sh` — emits one JSON line per open, non-draft
    PR (with commits in the last 7 days) that touches frontend files and has no
@@ -37,7 +48,7 @@ scan their account.
    runs, with this skill's frontend filter and markers — call the wrapper, not
    the shared script.) You make the final call: skip PRs where the "frontend" files are config,
    test, or generated churn, and skip backend PRs that slipped through. Genuinely
-   nothing showable → say so in the pass summary, post nothing.
+   nothing showable → say so in the summary, post nothing.
 
    **Only user-visible change is in scope.** The question for every PR is
    "what would a user see differently?" Ask it of the surfaces a user
@@ -49,13 +60,15 @@ scan their account.
    demo however large the diff. A PR whose own description is a list of
    internal cleanups is a skip you can make from the description alone.
 2. Demo each real candidate (below).
-3. When looping continuously, schedule the next pass 20–30 min out (`/loop` or
-   `ScheduleWakeup`); the marker makes passes idempotent per head SHA.
+3. Report what the sweep did and **stop**. Do not schedule another pass — say
+   that `/pr-watcher run /pr-demo-media` is how to stay covered and let the
+   user decide. The marker keeps every trigger idempotent per head SHA, so a
+   sweep and a watcher never demo the same commit twice.
 
 ## Single-PR invocation
 
 When handed one PR — by `/pr-watcher`, or by a user naming a PR — do not run
-the loop. The contract:
+the sweep. The contract:
 
 1. **Skip discovery.** `find-demo-candidates.sh` is for sweeps.
 2. **Idempotency first.** A marker comment for this exact head means it is
@@ -96,8 +109,8 @@ what's the shortest flow that shows it?* Write the 3–6 beats before any code.
   checkbox, a renamed button, an element that simply wasn't there. Two images
   of an obvious difference read as padding, not evidence.
 
-Neither, when nothing a user meets changed — see the scope rule in the loop
-above. Post nothing rather than dressing up a refactor.
+Neither, when nothing a user meets changed — see the scope rule in
+[How it runs](#how-it-runs). Post nothing rather than dressing up a refactor.
 
 **Video** when the change is *how something behaves*:
 - multi-step flows (login, wizard, checkout), navigation changes

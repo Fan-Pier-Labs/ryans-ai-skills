@@ -110,7 +110,9 @@ gets reviewed back into shape. The short version:
 
 Then wire it into the README:
 
-- add a row to the skills table (skill, what it does, cadence);
+- add a row to the right section's skills table (skill, what it does, plus a
+  cadence cell in every section except background agents, whose table has no
+  cadence column — see the conventions reference);
 - add the name to the `for s in …` install loop;
 - fix the count in the first sentence ("Six Claude Code skills" → whatever
   it now is) and, if the skill composes with the others, the composition

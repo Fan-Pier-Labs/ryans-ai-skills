@@ -1,17 +1,18 @@
 ---
 name: pr-watcher
-description: Run another skill on every qualifying pull request — first a sweep of the ones open now, then each one again the moment it gets new commits (GitHub webhook deliveries when possible, polling otherwise). Qualifying means authored by the user and opened in the last 7 days unless told otherwise. "/pr-watcher run /auto-reviewer" reviews your open PRs now and every one as it changes; "/pr-watcher run /ci-runner /auto-reviewer" does both from one watcher. One webhook, one queue, any number of skills, PRs handled in parallel. Use whenever the user wants a skill to react to PR activity instead of sweeping on a timer — "watch PRs and review them", "run CI when a PR changes", "start the watcher", "trigger X whenever a PR updates".
+description: Run another skill on every qualifying pull request — first a catch-up sweep of the ones open now, then each one again the moment it gets new commits or merges (GitHub webhook deliveries; polling only as the fallback when a repo will not grant a webhook). This is how the background agents run continuously: none of them has a timer of its own. Qualifying means authored by the user and opened in the last 7 days unless told otherwise. "/pr-watcher run /auto-reviewer" reviews your open PRs now and every one as it changes; "/pr-watcher run /ci-runner /auto-reviewer" does both from one watcher. One webhook, one queue, any number of skills, PRs handled in parallel. Use whenever the user wants a skill to react to PR activity instead of sweeping on a timer — "watch PRs and review them", "run CI when a PR changes", "start the watcher", "trigger X whenever a PR updates".
 ---
 
 # PR Watcher
 
 Two layers, and the seam between them is the whole design:
 
-- **`scripts/watch.sh`** (a background process) queues PR heads to a file.
+- **`scripts/watch.sh`** (a background process) queues PR items to a file.
   At start it sweeps every open PR that qualifies (below) and queues each
   one; from then on it queues a qualifying PR again whenever it gets a new
-  head. It never acts on a queued head and never writes to GitHub. Webhook
-  deliveries when it can get them, polling when it can't (details below).
+  head **or merges**. It never acts on a queued item and never writes to
+  GitHub. Webhook deliveries when it can get them, polling when it can't
+  (details below).
 - **You** (the agent running this skill) drain that queue and invoke the
   target skill(s) on each queued PR — a subagent per PR, several at once.
 
@@ -19,7 +20,8 @@ The seam exists because **a detached shell process cannot invoke a skill;
 only a live agent can.** So while no agent is running `/pr-watcher`, the queue
 fills and nothing else happens. It persists on disk; the next `run` drains it.
 The webhook buys low latency *within* a session — it cannot wake a session
-that isn't there.
+that isn't there. That is the one case where an interval sweep of a target
+skill (cron over `ci-runner.sh`) still beats this: no session to deliver to.
 
 Why one watcher rather than one per skill: however many skills are attached,
 there is one webhook on the repo, one forwarder, one poller. Three skills each
@@ -42,7 +44,8 @@ Widen or narrow the PRs in words — "everyone's PRs", "from the last month",
 Every target skill must be installed as a sibling of this one and have a
 **"Single-PR invocation"** section in its `SKILL.md` — that section is the
 contract this skill dispatches against. ci-runner, auto-reviewer and
-pr-demo-media have one.
+pr-demo-media have one; auto-reviewer also has a **"Merged-PR invocation"**
+section, which is what a merge event dispatches against.
 
 ## Which repos
 
@@ -70,12 +73,19 @@ The defaults are deliberate: these skills spend real tokens per PR, and the
 PRs the user is working on this week are the ones worth spending on. Widen
 only when the user says so.
 
+A **merged** PR by `AUTHOR` qualifies too, whatever its age — `PR_DAYS` asks
+what is worth working on now, and a PR opened months ago and merged today is
+exactly the case a merge follow-up is for. Merged items are a different kind
+of work, not another review; see [Item kinds](#item-kinds).
+
 ## `run` — starting
 
 1. **Resolve the targets.** Each `/name` must exist as `../name/SKILL.md`
    with a "Single-PR invocation" section. Read that section for each — it
    tells you the skill's idempotency rule and whether it needs a subagent at
-   all. A missing skill is a hard stop: say which, don't substitute.
+   all. Note which of them also has a "Merged-PR invocation" section; those
+   are the only ones a `merged` item goes to. A missing skill is a hard stop:
+   say which, don't substitute.
 
 2. **Start the watcher** in the background and keep it running for the
    session, with `AUTHOR` / `PR_DAYS` only if the user asked for something
@@ -99,25 +109,52 @@ only when the user says so.
    idempotency check does, and the dispatch step below runs it before
    spending anything.
 
+## Item kinds
+
+Every queued item carries a `kind`, and it decides which skills see it:
+
+| `kind` | Queued when | Dispatched to |
+| --- | --- | --- |
+| `head` | a qualifying PR is open with a head nothing has handled yet — the start-up sweep, a `push` / `pull_request` delivery, or the fallback poll | every target skill, through its **"Single-PR invocation"** section |
+| `merged` | a qualifying PR merges — the `pull_request` `closed` delivery, or `gh pr list --state merged` on the fallback path. `sha` is the merge commit | only skills with a **"Merged-PR invocation"** section. Today that is auto-reviewer (the issue it opens when a 🔴 finding merged unaddressed) |
+
+A `merged` item dispatched to a skill without that section is a no-op, not an
+error: say `skipped: <skill> has no merged-PR contract` and spend nothing.
+Never review, run CI on, or demo a merged PR — it is closed, and the
+comment channel with it.
+
 ## The drain loop
 
 Each tick:
 
 1. `scripts/watch.sh --drain` prints every pending item as a JSON line
-   (`{ts, repo, pr, sha, via}`) and clears the queue. Empty is normal.
-2. For each item × each target skill, dispatch as below. Keep at most
-   **`JOBS`** (default 3) subagents in flight; hold the rest and dispatch as
-   slots free up — a finishing subagent re-invokes you, so no polling is
-   needed for that.
-3. Stay alive between ticks without a foreground sleep. Prefer a **Monitor**
-   on the queue file (`~/.cache/generic-coding-agents/pr-watcher/queue.jsonl`
-   growing) so a delivery wakes you immediately; fall back to
-   `ScheduleWakeup` or `/loop` at 5–10 minutes as the heartbeat. The watcher
-   keeps queuing either way.
+   (`{ts, repo, pr, sha, kind, via}`) and clears the queue. Empty is normal.
+2. For each item × each target skill that takes that `kind`, dispatch as
+   below. Keep at most **`JOBS`** (default 3) subagents in flight; hold the
+   rest and dispatch as slots free up — a finishing subagent re-invokes you,
+   so no polling is needed for that.
+3. Stay alive between ticks **without a timer of your own**. A **Monitor** on
+   the queue file (`~/.cache/generic-coding-agents/pr-watcher/queue.jsonl`
+   growing) is the mechanism: a delivery wakes you within seconds, and you
+   spend nothing while the queue is quiet. Only if a Monitor is unavailable,
+   fall back to `ScheduleWakeup` or `/loop` at 5–10 minutes — and say that you
+   did, because it is a latency downgrade, not a preference. The watcher keeps
+   queuing either way.
 4. After every non-empty tick, report one line per item: skill, PR, outcome
    (a link to what was posted, or `skipped: <reason>`).
 
 ## Dispatching one item
+
+**A `merged` item goes to one place.** Dispatch it only to target skills whose
+`SKILL.md` has a "Merged-PR invocation" section, with this prompt; every other
+skill skips it (see [Item kinds](#item-kinds)).
+
+```
+Invoke the `<skill>` skill for exactly one *merged* pull request: <repo>#<pr>,
+merge commit <sha>. Follow that skill's "Merged-PR invocation" section and
+nothing else — do not review, run, or demo a closed PR. Its idempotency rule
+applies first. Report in one line: what you opened (link) or why you skipped.
+```
 
 **Deterministic skills need no subagent.** ci-runner's per-PR command is a
 shell call: run `skills/ci-runner/scripts/ci-runner.sh --run-one REPO PR SHA` in the
@@ -175,15 +212,22 @@ stop will remove it, or delete it by hand — nothing else uses that URL.
 - **Report the mode honestly.** Polling is a legitimate fallback; say so.
   Don't tell the user events are live unless the watcher printed
   `MODE=events`.
+- **Never add a timer on top.** The watcher is the clock. Re-running a target
+  skill's own sweep on an interval while a watcher is up duplicates every
+  query for nothing — the markers would stop the double post, but not the
+  double spend.
 
 ## Tuning
 
 `REPOS` / `OWNERS` / `DAYS` as on every script in this repo. `AUTHOR`
 (default `@me`; `anyone` for no author filter) and `PR_DAYS` (default 7; 0
-for no age filter) define which PRs qualify. `SWEEP=0` skips the start-up
-sweep and marks the current heads as seen, so only later changes are queued.
-`scripts/watch.sh --sweep` queues the qualifying heads on demand without
-starting a watcher. `JOBS` (concurrent subagents, default 3).
+for no age filter) define which PRs qualify. `MERGED_DAYS` (default 1) is how
+far back the merge query looks on the paths where a poll stands in for the
+`closed` delivery — the start-up catch-up, a repo with no webhook, and the
+safety-net poll. `SWEEP=0` skips the start-up sweep and marks the current
+heads and recent merges as seen, so only later changes are queued.
+`scripts/watch.sh --sweep` queues those same items on demand without starting
+a watcher. `JOBS` (concurrent subagents, default 3).
 `POLL_INTERVAL` (polling-mode gap, default 300s). `FALLBACK_SWEEP`
 (event-mode safety-net poll, default 1800s — `gh webhook forward` has no
 delivery guarantee). `STATE_DIR` (queue, ledger, pid; default

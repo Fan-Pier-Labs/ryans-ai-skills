@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Turn GitHub webhook deliveries into `<on-change> REPO PR SHA webhook` calls.
+"""Turn GitHub webhook deliveries into `<on-change> REPO PR SHA VIA` calls.
 
 Reads deliveries forwarded by `gh webhook forward` (which POSTs them to this
 local server over a websocket-backed tunnel, so no public endpoint is needed)
 and hands every changed PR head to the command given with --on-change — for
 watch.sh that is `watch.sh --enqueue`, which is idempotent, so duplicate
-deliveries for one head cost nothing.
+deliveries for one head cost nothing. A merged PR is handed over too, as
+`via=merged`, because "this landed" is work in its own right.
 
 Binds an ephemeral port and writes it to --port-file, so the supervisor can
 point the forwarder at us without racing for a fixed port. Stdlib only.
@@ -45,22 +46,31 @@ def dispatch(event: str, payload: dict, on_change: list[str]) -> None:
     repo = (payload.get("repository") or {}).get("full_name")
     if not repo:
         return
-    heads: list[tuple[str, str]] = []
+    items: list[tuple[str, str, str]] = []     # (pr, sha, via)
 
     if event == "pull_request":
         pr = payload.get("pull_request") or {}
-        if payload.get("action") in PR_ACTIONS and not pr.get("draft"):
-            number, sha = pr.get("number"), (pr.get("head") or {}).get("sha")
+        action, number = payload.get("action"), pr.get("number")
+        if action in PR_ACTIONS and not pr.get("draft"):
+            sha = (pr.get("head") or {}).get("sha")
             if number and sha:
-                heads.append((str(number), sha))
+                items.append((str(number), sha, "webhook"))
+        elif action == "closed" and pr.get("merged") and number:
+            # A merge is its own kind of work — what landed, not what to do
+            # next to an open PR — and it is the delivery that replaces
+            # auto-reviewer's old "list what merged since the last pass"
+            # query. The merge commit is the dedup key, so one item per PR.
+            sha = pr.get("merge_commit_sha") or (pr.get("head") or {}).get("sha")
+            if sha:
+                items.append((str(number), sha, "merged"))
     elif event == "push":
         sha = payload.get("after")
         if sha and set(sha) != {"0"}:          # 000…0 is a branch deletion
-            heads = pulls_for_sha(repo, sha)
+            items = [(n, s, "webhook") for n, s in pulls_for_sha(repo, sha)]
 
-    for number, sha in heads:
+    for number, sha, via in items:
         try:
-            subprocess.run([*on_change, repo, number, sha, "webhook"], check=False, timeout=60)
+            subprocess.run([*on_change, repo, number, sha, via], check=False, timeout=60)
         except Exception as exc:               # one bad delivery must not kill the receiver
             log(f"ERROR handing off {repo}#{number}: {exc}")
 

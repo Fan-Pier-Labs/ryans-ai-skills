@@ -58,26 +58,20 @@ interrupted runs self-heal on the next sweep. This means any machine with `gh`
 auth can run sweeps interchangeably, and "has CI run?" is answered by the PR
 page itself.
 
-## Getting change events instead of polling
+## Change events, and what to do when there are none
 
-The shared `pr-watcher` skill implements option 3 below, with option 1 as
-its fallback, and calls `--run-one` per changed PR. It lives in its own skill
-rather than here because one watcher serves every PR-reactive skill from one
-webhook; see [../pr-watcher/SKILL.md](../pr-watcher/SKILL.md).
+Events are how this runs: the shared `pr-watcher` skill implements option 1
+below and calls `--run-one` per changed PR, keeping option 3 only for repos
+that will not grant a webhook. It lives in its own skill rather than here
+because one watcher serves every PR-reactive skill from one webhook; see
+[../pr-watcher/SKILL.md](../pr-watcher/SKILL.md).
 
-Three options, in increasing order of immediacy:
+Three options, in decreasing order of immediacy:
 
-1. **Sweep on an interval** (the fallback) — cron or `/loop 15m`. Simple,
-   stateless, ~1 API call per repo per sweep plus one per open PR head.
-2. **Conditional polling of the Events API** — `gh api repos/<r>/events` with
-   the `If-None-Match` ETag header. GitHub returns `304 Not Modified` for free
-   (304s don't count against the rate limit) and advertises the allowed
-   cadence in `X-Poll-Interval`. Good for tightening latency to ~1 minute
-   without webhooks.
-3. **Real push events: `gh webhook forward`** (what `pr-watcher` uses) — the official gh extension
-   (`gh extension install cli/gh-webhook`) creates a temporary webhook and
-   streams deliveries to a local URL over a websocket, no public endpoint
-   needed:
+1. **Real push events: `gh webhook forward`** (what `pr-watcher` uses) — the
+   official gh extension (`gh extension install cli/gh-webhook`) creates a
+   temporary webhook and streams deliveries to a local URL over a websocket,
+   no public endpoint needed:
 
    ```bash
    gh webhook forward --repo=<owner>/<repo> --events=push,pull_request --url=http://localhost:9000/hook
@@ -90,6 +84,15 @@ Three options, in increasing order of immediacy:
    runs `ci-runner.sh` on each delivery turns this into push-triggered CI.
    Missed deliveries are covered by keeping a slow fallback sweep (say,
    hourly) — the commit-status ledger makes overlap harmless.
+2. **Conditional polling of the Events API** — `gh api repos/<r>/events` with
+   the `If-None-Match` ETag header. GitHub returns `304 Not Modified` for free
+   (304s don't count against the rate limit) and advertises the allowed
+   cadence in `X-Poll-Interval`. Tightens latency to ~1 minute for a repo that
+   will not grant a webhook, without paying for a full sweep each time.
+3. **Sweep on an interval** (the last resort) — cron or `/loop 15m`. Simple,
+   stateless, ~1 API call per repo per sweep plus one per open PR head. The
+   one case it genuinely wins: no live session for a delivery to reach, so
+   nothing is listening when the event fires.
 
 ## The all-local alternative
 
