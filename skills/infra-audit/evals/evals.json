@@ -1,0 +1,23 @@
+{
+  "skill_name": "infra-audit",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We're a 3-person startup about to raise a seed round and an investor asked for an 'infra review'. Our whole stack is one Ubuntu EC2 t3.large (profile acme, us-east-1) running nginx, a Node API under pm2, and Postgres 14 on the same box, plus a Redis container. Frontend is on Vercel, auth is Clerk. Here's the repo. Tell me honestly what they're going to flag and what we should fix first. You can ssh in as ubuntu with the key in ~/.ssh/acme.pem.",
+      "expected_output": "Runs the read-only inventory and the SSH sweep (asks/uses the key), then a scorecard with all thirteen rows. Leads with the self-hosted Postgres (Q3 No) and its consequences for Q2 and Q1, reports the CloudTrail append-only PASS/FAIL table (almost certainly No), rates crash resilience as No/Partial for bare EC2 + pm2 and checks pm2 startup, answers Q12 (containerized) No for the pm2-on-a-checkout API even if a dev Dockerfile exists (Partial at most, with Redis noted as the only container), checks IAM MFA from the credential report and asks about Vercel/Clerk/GitHub/registrar 2FA (recorded as reported), notes Vercel+AWS+Clerk is an acceptable count but flags any more, lists secrets found on disk by name only, gives a this-week / next / decisions sequence, and runs nothing that changes the account.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "can you check whether our aws account (profile acme) has cloudtrail set up properly? i want to make sure the logs can't be deleted",
+      "expected_output": "Runs the inventory (or the hand-check commands) and produces the 14-rule PASS/FAIL table for the trail: multi-region, global events, read+write management events, log file validation, Object Lock enabled, COMPLIANCE default retention >= 1y, a real object carrying COMPLIANCE retention, versioning, four public-access blocks, deny DeleteBucket/DeleteBucketPolicy, CloudTrail-only write with SourceAccount condition, encryption. Then the recommendations (KMS, lifecycle expiry, tamper alerting, org trail) as WARN, not FAIL. Does not create or modify anything without being asked, and if asked to fix, confirms the retention years explicitly first.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "We built our analytics product on DynamoDB + Lambda because that's what the first engineer knew. Customers run dashboards that aggregate ~6 months of events and they're getting slow. Some of our workers run on a Hetzner box and the API is split between Render and ECS Fargate. Is our setup wrong? What would you change?",
+      "expected_output": "Answers Q4 (BI/aggregation on DynamoDB + Lambda is the wrong shape; Redshift/Redshift Serverless or ClickHouse/BigQuery for the analytical path, with DynamoDB kept for the write path if it fits), Q5 (API split across Render and Fargate is the same-layer split to consolidate, to the side that holds the data), Q11 (Hetzner is fine for the workers if they are background jobs; a finding only if anything customer-facing runs there), Q6 (counts providers), and Q9 (Fargate side is resilient; asks about the Render side). Gives a migration order and asks what it cannot know rather than guessing.",
+      "files": []
+    }
+  ]
+}
