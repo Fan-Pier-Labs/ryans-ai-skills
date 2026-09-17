@@ -1,16 +1,17 @@
 ---
 name: auto-reviewer
-description: Continuously scan every open, non-draft pull request in the current repo (or the repos/orgs given via REPOS/OWNERS) and post a deep thermo-nuclear code-quality review — with 🔴/🟡/🟢 status circles, a 1–5 risk score, and an opt-in product-direction check — on any PR whose latest commits have not yet been reviewed; also posts cross-PR merge-conflict notes and opens an issue when a blocking finding merges unaddressed. Use whenever the user asks to start the auto reviewer, review open PRs, babysit PRs, "run the review agent", "review anything that needs it", or wants continuous/automatic PR review coverage — even if they don't name the skill explicitly.
+description: Review pull requests as they change — driven by GitHub webhook deliveries through /pr-watcher, never on a timer — and post a deep thermo-nuclear code-quality review — with 🔴/🟡/🟢 status circles, a 1–5 risk score, and an opt-in product-direction check — on any PR whose latest commits have not yet been reviewed; also posts cross-PR merge-conflict notes and opens an issue when a blocking finding merges unaddressed. Invoked on its own it runs one catch-up sweep of the PRs open now and stops; polling is only the fallback for a repo that will not grant a webhook. Use whenever the user asks to start the auto reviewer, review open PRs, babysit PRs, "run the review agent", "review anything that needs it", or wants continuous/automatic PR review coverage — even if they don't name the skill explicitly.
 ---
 
 # Auto Reviewer Agent
 
-A long-running review agent. Each pass it finds open, non-draft PRs in the
-target repos (the current repo by default) that have had commits in the last 7 days and
-have received **no feedback since their latest commit**, then runs a
-thermo-nuclear code-quality review on each and posts the findings as a PR
-comment. Every comment also carries a **risk score** (how much could break if
-the PR is wrong) and, when the repo has a product vision on file, a
+A review agent that reacts to pull requests changing. It works on open,
+non-draft PRs in the target repos (the current repo by default) that have had
+commits in the last 7 days and have received **no feedback since their latest
+commit**, and runs a thermo-nuclear code-quality review on each, posting the
+findings as a PR comment. Every comment also carries a **risk score** (how much
+could break if the PR is wrong) and, when the repo has a product vision on
+file, a
 **direction check** (does this PR move the product toward where it is meant to
 be in 6–12 months).
 
@@ -41,9 +42,20 @@ are expanded to their repos pushed within `DAYS`). If the script exits with
 target** and re-run with `REPOS` or `OWNERS` set — do not guess, and do not
 scan their account.
 
-## The loop
+## How it runs
 
-This is a continuous agent, not a one-shot. Run it as a loop:
+**On PR events, never on a timer.** Continuous coverage is
+`/pr-watcher run /auto-reviewer`: that watcher catches up once on the PRs open
+now, then queues each one again the moment GitHub delivers a `push` /
+`pull_request` webhook for it, and invokes this skill per PR through
+[Single-PR invocation](#single-pr-invocation). Nothing in this skill sleeps and
+re-sweeps — if you are about to schedule the next pass, start the watcher
+instead. Polling is the watcher's fallback for a repo that will not grant a
+webhook, and it reports when it degrades to it.
+
+Invoked on its own (`/auto-reviewer`, no watcher), this is **one sweep, then
+stop** — the catch-up half of the same work, for when there is no live session
+for a delivery to wake:
 
 1. Run `scripts/find-review-candidates.sh`. Each output line is
    `{repo, number, title, url, head_sha, last_commit}`.
@@ -51,12 +63,18 @@ This is a continuous agent, not a one-shot. Run it as a loop:
 3. **Check the open PRs in each touched repo against each other** for merge
    conflicts, and post a note on every PR involved. See
    [Cross-PR conflicts](#cross-pr-conflicts).
-4. **Check what merged since the last pass.** A PR that merged while a 🔴
-   finding on it was still unaddressed becomes a GitHub issue assigned to the
-   PR's author. See [Merged with a blocking finding](#merged-with-a-blocking-finding).
-5. Sleep / schedule the next pass ~20–30 minutes out and repeat. In Claude Code,
-   prefer the `/loop` skill or `ScheduleWakeup` over a foreground `sleep`. A
-   pass with zero candidates is a normal no-op — just note it and wait.
+4. **Check what merged recently.** A PR that merged while a 🔴 finding on it
+   was still unaddressed becomes a GitHub issue assigned to the PR's author.
+   See [Merged with a blocking finding](#merged-with-a-blocking-finding).
+5. Report what the sweep did and **stop**. Zero candidates is a normal no-op.
+   Do not schedule another pass: say that `/pr-watcher run /auto-reviewer` is
+   how to stay covered, and let the user decide.
+
+Steps 3 and 4 are per batch, not per PR. Under the watcher, run them once
+after each drained batch of events, across the repos that batch touched — the
+conflict picture is repo-wide, and a merge event is what makes step 4 worth
+running at all (the watcher queues one, tagged `via: merged`; see
+[Merged-PR invocation](#merged-pr-invocation)).
 
 The script is idempotent: once a review comment is posted, that PR won't
 reappear until it gets new commits, because the marker comment's timestamp is
@@ -167,7 +185,7 @@ newer than the last commit. Never review the same head SHA twice.
 ## Single-PR invocation
 
 When handed one PR — by `/pr-watcher`, or by a user naming a PR — do not run
-the loop. The contract:
+the sweep. The contract:
 
 1. **Skip discovery.** `find-review-candidates.sh` is for sweeps.
 2. **Idempotency first.** A marker comment for this exact head means it is
@@ -182,16 +200,26 @@ the loop. The contract:
    business now.
 4. Run **Reviewing one PR** as written. One comment, then clean up.
 
+## Merged-PR invocation
+
+`/pr-watcher` queues a merged PR as its own item, tagged `via: merged`, from
+the `pull_request` `closed` delivery. Handed one, do **only** the check in
+[Merged with a blocking finding](#merged-with-a-blocking-finding) for that PR:
+skip discovery, skip the `gh pr list --state merged` query (the event already
+named the PR), read the review comments on it, and open the issue only if its
+last verdict was 🔴 and nothing after the reviewed SHA addressed it. Never
+review a merged PR — the comment channel is closed and a review on it is noise.
+
 ## Cross-PR conflicts
 
 Two open PRs in the same repo can each merge cleanly into `main` and still not
 merge with each other. Nobody sees that until the second one is rebased, so the
-loop checks for it on every pass and says so on both PRs while the authors can
-still coordinate.
+check runs on every batch of PR events and says so on both PRs while the
+authors can still coordinate.
 
-**Scope.** Every repo that had at least one review candidate this pass, and
-within it every open PR (drafts included — a draft still conflicts). Repos with
-no recent activity are left alone.
+**Scope.** Every repo that had at least one review candidate in this batch,
+and within it every open PR (drafts included — a draft still conflicts).
+Repos with no recent activity are left alone.
 
 **Mechanical check.** Fetch every open PR head into one **full** clone — not
 the shallow one used for reviewing: `git merge-base` in a shallow clone can
@@ -247,7 +275,7 @@ suggested merge order (the base first, then members rebased to one-line diffs),
 and on members only where something specific to that member conflicts. A PR
 with pure stacking conflicts and nothing of its own gets no note.
 
-**Post one note per PR per pass**, listing every other PR it conflicts with,
+**Post one note per PR per batch**, listing every other PR it conflicts with,
 the conflicting files, the semantic overlap if any, and the one-line
 resolution ("keep both lines", "agree on one home for `baseDomain` before the
 second merges"). Say explicitly which PRs it does *not* conflict with, so a
@@ -285,8 +313,10 @@ history nobody reopens, but the problem is now on `main`. So a 🔴 that reaches
 author — because they have the context to fix it and the standing to say it
 was deliberate.
 
-Once per pass, after the conflicts step, list what merged since the previous
-pass in each touched repo:
+**The trigger is the merge itself.** Under `/pr-watcher` a merged PR arrives as
+a queued item (`via: merged`) and you check exactly that PR — no listing, no
+window. Only in a standalone sweep, where no event was there to catch it, list
+what merged recently in each touched repo instead:
 
 ```bash
 since=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d '1 day ago' +%Y-%m-%d)
@@ -306,7 +336,7 @@ For each merged PR that carries a review comment whose `**Verdict:**` line is
 
 The same applies when a review you are writing lands on a PR that merged
 between discovery and posting: post the review anyway (the marker still
-matters), and if its verdict is 🔴, open the issue in the same pass. And when a
+matters), and if its verdict is 🔴, open the issue right then. And when a
 follow-up or the whole-codebase audit finds a 🔴 that traces to a specific
 merged PR, that is an issue too — the trigger is "a 🔴 is on `main` and has a
 PR to point at", not the timing.
@@ -407,10 +437,10 @@ what "enough" looks like.
   collides with. This becomes a blocking finding.
 - If the vision file is thin (well under the length the template asks for, or
   missing the 6-month / 1-year sections), do not run the direction check.
-  Post the review without a Direction line and tell the user in the pass
-  summary that the vision for `<owner>/<repo>` is too thin to review against.
+  Post the review without a Direction line and tell the user in the summary
+  that the vision for `<owner>/<repo>` is too thin to review against.
 - Never edit a vision file yourself. If a PR makes it obvious the vision is
-  stale, say so in the pass summary and let the owner update it.
+  stale, say so in the summary and let the owner update it.
 
 ## Guardrails
 
@@ -419,18 +449,18 @@ what "enough" looks like.
   per head SHA per PR, one conflict note per PR per change in the conflict
   picture, and one issue per merged PR that carried an unaddressed 🔴 (see
   [Merged with a blocking finding](#merged-with-a-blocking-finding)).
-- One comment per pass per PR. If a PR gets new commits later, the next pass
-  posts a fresh comment (the old one stays as history).
+- One comment per head SHA per PR. If a PR gets new commits later, the next
+  event posts a fresh comment (the old one stays as history).
 - Skip PRs whose diff is pure lockfile/generated churn — post nothing rather
   than review noise. (Vendored deps, `bun.lock`, build output.)
 - If a repo fails to clone or a `gh` call 404s (deleted repo, permissions),
-  skip it and move on; report failures in the pass summary, don't retry in a
-  tight loop.
-- Keep a short per-pass summary for the user: how many candidates, which PRs
-  got reviewed (with verdict, risk score, and direction circle for each),
-  which PR pairs conflict, which merged PRs got an issue (or were checked and
-  did not need one), links to the posted comments and issues, and any repos
-  whose vision file is missing or too thin.
+  skip it and move on; report failures in the summary, don't retry in a tight
+  loop.
+- Keep a short summary for the user after each sweep or drained batch: how
+  many candidates, which PRs got reviewed (with verdict, risk score, and
+  direction circle for each), which PR pairs conflict, which merged PRs got an
+  issue (or were checked and did not need one), links to the posted comments
+  and issues, and any repos whose vision file is missing or too thin.
 
 ## Tuning
 

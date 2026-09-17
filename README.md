@@ -21,16 +21,28 @@ default the repo of the current working directory, or the repos/orgs you name vi
 `REPOS`/`OWNERS`. They compose: dependency-updater opens PRs → ci-runner runs them →
 auto-reviewer reviews them → pr-demo-media demos the frontend ones. Each posts only where it
 is supposed to, and each dedups on the PR's head SHA, so nothing gets reviewed, run, or demoed
-twice for the same commit. `pr-watcher` is how the other three run *on change* rather than on
-a timer: one watcher, one webhook, and it dispatches whichever skills it was started with per
-changed PR.
+twice for the same commit.
 
-| Skill | What it does | Cadence |
-| --- | --- | --- |
-| [auto-reviewer](skills/auto-reviewer/SKILL.md) | Posts a thermo-nuclear code-quality review on any open, non-draft PR (active in the last week) that has had no feedback since its latest commit. Each review carries 🔴/🟡/🟢 status circles, a 1–5 risk score (blast radius if the PR is wrong), and — for repos with a `visions/<owner>/<repo>.md` on file — a check of whether the PR moves the product toward its stated 6-month/1-year direction. Each pass also runs `git merge-tree` across every open PR pair in the touched repos and posts a conflict note on both sides. A 🔴 finding that reaches `main` because its PR merged unaddressed becomes a GitHub issue assigned to the PR's author. Per-PR, where [code-quality-audit](skills/code-quality-audit/SKILL.md) is per-repo | continuous loop, ~20–30 min |
-| [ci-runner](skills/ci-runner/SKILL.md) | Runs each PR's own `.github/workflows` YAML on this machine (for when GitHub Actions credits are out), several PRs at a time, and posts commit statuses + failure logs. Fully deterministic and stateless — the `local-ci` status on the head SHA is the dedup ledger, and `scripts/ci-runner.sh` is cron-able on its own. Design notes in [ci-runner/README.md](skills/ci-runner/README.md) | every ~15 min, or on PR events via pr-watcher |
-| [pr-demo-media](skills/pr-demo-media/SKILL.md) | Demos frontend PRs: spins up each PR's app and records a Playwright video or captures before/after screenshots — whichever fits the change — then posts it with `gh pr comment --attach` | continuous loop, ~20–30 min |
-| [pr-watcher](skills/pr-watcher/SKILL.md) | Runs any of the above on the PRs that qualify (yours, opened in the last 7 days, by default): `/pr-watcher run /auto-reviewer /ci-runner`. Sweeps every qualifying open PR first, then handles each one the moment it changes — one `gh webhook forward` per repo (polling if the repo won't grant a webhook) feeds a queue, drained by a capped number of subagents, one per PR. The watcher itself writes nothing to GitHub | while the session runs |
+**None of them runs on a timer** — there is no cadence to pick. `pr-watcher` is the one entry
+point: it catches up once on the PRs that are open now, then reacts to GitHub webhook
+deliveries (one `gh webhook forward` per repo, no public endpoint) and dispatches whichever
+skills it was started with, one subagent per changed PR.
+
+```bash
+/pr-watcher run /ci-runner /auto-reviewer /pr-demo-media
+```
+
+Polling is the fallback, not the design. The watcher drops to it only when a repo won't grant
+a webhook or every forwarder has died, and it says `MODE=polling` with the reason when it
+does. Each skill is still a single sweep you can run on its own — that is what cron and
+`/loop` get, and it is the right answer only when there is no session for a webhook to wake.
+
+| Skill | What it does |
+| --- | --- |
+| [auto-reviewer](skills/auto-reviewer/SKILL.md) | Posts a thermo-nuclear code-quality review on any open, non-draft PR (active in the last week) that has had no feedback since its latest commit. Each review carries 🔴/🟡/🟢 status circles, a 1–5 risk score (blast radius if the PR is wrong), and — for repos with a `visions/<owner>/<repo>.md` on file — a check of whether the PR moves the product toward its stated 6-month/1-year direction. Every batch of PR events also runs `git merge-tree` across every open PR pair in the touched repos and posts a conflict note on both sides. A 🔴 finding that reaches `main` because its PR merged unaddressed becomes a GitHub issue assigned to the PR's author — triggered by the merge event itself, not by a sweep. Per-PR, where [code-quality-audit](skills/code-quality-audit/SKILL.md) is per-repo |
+| [ci-runner](skills/ci-runner/SKILL.md) | Runs each PR's own `.github/workflows` YAML on this machine (for when GitHub Actions credits are out), several PRs at a time, and posts commit statuses + failure logs. Fully deterministic and stateless — the `local-ci` status on the head SHA is the dedup ledger, so a webhook, a subagent and a cron fallback can all drive the same `--run-one` executor. Design notes in [ci-runner/README.md](skills/ci-runner/README.md) |
+| [pr-demo-media](skills/pr-demo-media/SKILL.md) | Demos frontend PRs: spins up each PR's app and records a Playwright video or captures before/after screenshots — whichever fits the change — then posts it with `gh pr comment --attach` |
+| [pr-watcher](skills/pr-watcher/SKILL.md) | Runs any of the above on the PRs that qualify (yours, opened in the last 7 days, by default): `/pr-watcher run /auto-reviewer /ci-runner`. Catches up on every qualifying open PR once, then handles each one the moment it changes or merges — one `gh webhook forward` per repo (polling only if the repo won't grant a webhook) feeds a queue, drained by a capped number of subagents, one per PR. The watcher itself writes nothing to GitHub |
 
 ## 2. Development skills
 

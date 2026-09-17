@@ -3,16 +3,16 @@
 #
 # At start it sweeps every open PR that qualifies — authored by $AUTHOR
 # (default @me) and created within $PR_DAYS days (default 7), never drafts —
-# and queues each head. Then it notices when a qualifying PR gets a new head —
-# through GitHub webhook deliveries when it can, polling when it can't — and
-# queues that too. It never acts on a queued head itself. Which skill handles
-# it is decided by the agent running /pr-watcher: it drains the queue and
-# invokes that skill per PR. (A detached shell process cannot invoke a skill;
+# and queues each head. Then it notices when a qualifying PR gets a new head,
+# or merges — through GitHub webhook deliveries when it can, polling when it
+# can't — and queues that too. It never acts on a queued item itself. Which
+# skill handles it is decided by the agent running /pr-watcher: it drains the
+# queue and invokes that skill per PR. (A detached shell process cannot invoke a skill;
 # only a live agent can. See ../SKILL.md.)
 #
 # Modes:
 #   (default)                    watch forever: sweep, then webhook or poll, queuing changes
-#   --sweep                      queue every qualifying open head now, then exit
+#   --sweep                      queue every qualifying open head and recent merge now, then exit
 #   --enqueue REPO PR SHA [VIA]  append one change; deduped by repo#pr@sha
 #   --drain                      print pending items as JSON lines and clear them
 #   --status                     one line: mode, pending, seen, pid
@@ -29,8 +29,10 @@
 # Env: REPOS / OWNERS / DAYS (as every skill script; default: the current repo),
 # AUTHOR (which PRs qualify, default @me; `anyone` for no author filter),
 # PR_DAYS (PRs created within this many days qualify, default 7; 0 for no age
-# filter), SWEEP=0 to skip the start-up sweep and only queue what changes
-# afterwards, POLL_INTERVAL (polling-mode gap, default 300s), FALLBACK_SWEEP
+# filter), MERGED_DAYS (how far back the merge query looks when a poll has to
+# stand in for the `closed` delivery, default 1), SWEEP=0 to skip the start-up
+# sweep and only queue what changes afterwards, POLL_INTERVAL (polling-mode
+# gap, default 300s), FALLBACK_SWEEP
 # (event-mode safety-net poll, default 1800s), STATE_DIR (queue and ledger
 # live here, default ~/.cache/generic-coding-agents/pr-watcher).
 set -uo pipefail
@@ -38,6 +40,7 @@ set -uo pipefail
 DAYS="${DAYS:-30}"
 AUTHOR="${AUTHOR:-@me}"
 PR_DAYS="${PR_DAYS:-7}"
+MERGED_DAYS="${MERGED_DAYS:-1}"
 POLL_INTERVAL="${POLL_INTERVAL:-300}"
 FALLBACK_SWEEP="${FALLBACK_SWEEP:-1800}"
 STATE_DIR="${STATE_DIR:-$HOME/.cache/generic-coding-agents/pr-watcher}"
@@ -65,6 +68,7 @@ if [[ -z "$SHARED" || ! -f "$SHARED/repo-targets.sh" ]]; then
 fi
 . "$SHARED/repo-targets.sh"
 PR_SINCE=$(ts_days_ago "$PR_DAYS" +%Y-%m-%d)
+MERGED_SINCE=$(ts_days_ago "$MERGED_DAYS" +%Y-%m-%d)
 
 # --- queue primitives ---------------------------------------------------------
 # Enqueues arrive from the receiver's threads and from the poll loop at once, so
@@ -73,22 +77,37 @@ PR_SINCE=$(ts_days_ago "$PR_DAYS" +%Y-%m-%d)
 lock()   { local i=0; until mkdir "$LOCK" 2>/dev/null; do sleep 0.05; i=$((i+1)); [[ $i -gt 200 ]] && { rm -rf "$LOCK"; }; done; }
 unlock() { rmdir "$LOCK" 2>/dev/null; }
 
+# An item is one of two kinds, and the consumer dispatches on it:
+#   head   — this PR has a new head to act on (review it, run CI, demo it)
+#   merged — this PR landed; the sha is the merge commit. Only skills with a
+#            merged-PR contract get these (auto-reviewer's blocking-finding
+#            issue); nothing reviews or demos a closed PR.
 # Idempotent: a head that was already queued or seeded is a no-op.
 enqueue() { # repo pr sha [via]
-  local key="$1#$2@$3" via="${4:-manual}"
-  # Sweep and poll only ever see qualifying heads. A webhook delivery is for
-  # any PR in the repo, so it gets the same test before it can queue anything.
-  if [[ "$via" = webhook ]] && ! heads "$1" | awk -F'\t' -v n="$2" '$1==n{f=1} END{exit !f}'; then
-    log "ignored $1#$2 @ ${3:0:7}: does not qualify (AUTHOR=$AUTHOR PR_DAYS=$PR_DAYS)"
-    return 0
-  fi
+  local key="$1#$2@$3" via="${4:-manual}" kind=head
+  case "$via" in merged|merged-sweep|merged-poll) kind=merged ;; esac
+  # Sweep and poll only ever see qualifying PRs, because their queries carry
+  # the filter. A webhook delivery is for any PR in the repo, so it gets the
+  # same test here before it can queue anything.
+  case "$via" in
+    webhook)
+      if ! heads "$1" | awk -F'\t' -v n="$2" '$1==n{f=1} END{exit !f}'; then
+        log "ignored $1#$2 @ ${3:0:7}: does not qualify (AUTHOR=$AUTHOR PR_DAYS=$PR_DAYS)"
+        return 0
+      fi ;;
+    merged)
+      if ! merged_qualifies "$1" "$2"; then
+        log "ignored merged $1#$2: does not qualify (AUTHOR=$AUTHOR)"
+        return 0
+      fi ;;
+  esac
   lock
   if grep -qxF "$key" "$SEEN" 2>/dev/null; then unlock; return 0; fi
   echo "$key" >>"$SEEN"
-  printf '{"ts":"%s","repo":"%s","pr":%s,"sha":"%s","via":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$via" >>"$QUEUE"
+  printf '{"ts":"%s","repo":"%s","pr":%s,"sha":"%s","kind":"%s","via":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$kind" "$via" >>"$QUEUE"
   unlock
-  log "queued $1#$2 @ ${3:0:7} (via $via)"
+  log "queued $kind $1#$2 @ ${3:0:7} (via $via)"
 }
 
 # Print everything pending and clear it, atomically with respect to enqueues.
@@ -121,6 +140,41 @@ heads() { # repo
     --jq '.[] | select(.isDraft | not) | [(.number|tostring), .headRefOid] | @tsv' 2>/dev/null
 }
 
+# The gh-authenticated login, resolved once. @me is not a value any payload
+# carries, so comparing a webhook's author against it needs the real login.
+GH_LOGIN=""
+gh_login() {
+  [[ -n "$GH_LOGIN" ]] || GH_LOGIN=$(gh api user --jq .login 2>/dev/null)
+  printf '%s' "$GH_LOGIN"
+}
+
+# Does a merged PR qualify? A closed PR is gone from `heads`, so its author is
+# checked directly. Only the author filter applies: a PR opened months ago and
+# merged today is exactly the case the follow-up is for, so $PR_DAYS — which
+# is about what is worth working on *now* — would be the wrong filter here.
+merged_qualifies() { # repo pr
+  local login me
+  [[ "$AUTHOR" = anyone ]] && return 0
+  login=$(gh pr view "$2" -R "$1" --json author --jq .author.login 2>/dev/null)
+  [[ -n "$login" ]] || return 1
+  me="$AUTHOR"; [[ "$me" = "@me" ]] && me=$(gh_login)
+  [[ "$login" = "$me" ]]
+}
+
+# Merged PRs of one repo as "pr<TAB>merge-commit" lines — what stands in for
+# the `pull_request` closed delivery on the polling path: the start-up
+# catch-up, a repo with no webhook, and the safety-net poll under event mode
+# (the forwarder has no delivery guarantee). The window is $MERGED_DAYS, not
+# $PR_DAYS, because it is asked of the merge date; `seen` dedups, so
+# overlapping windows cost nothing.
+merged_heads() { # repo
+  local args=(-R "$1" --state merged --limit 200 --json number,mergeCommit
+              --search "merged:>=$MERGED_SINCE")
+  [[ "$AUTHOR" != anyone ]] && args+=(--author "$AUTHOR")
+  gh pr list "${args[@]}" \
+    --jq '.[] | select(.mergeCommit.oid != null) | [(.number|tostring), .mergeCommit.oid] | @tsv' 2>/dev/null
+}
+
 # Queue every qualifying current head, tagged with how it got there. Dedup
 # makes already-seen heads no-ops, so this is the start-up sweep, the polling
 # step and the safety net under event mode, all in one.
@@ -132,8 +186,16 @@ enqueue_heads() { # via
     done < <(heads "$repo")
   done
 }
-sweep() { enqueue_heads sweep; }
-poll()  { enqueue_heads poll; }
+enqueue_merged() { # via
+  local repo n sha
+  for repo in "${REPO_LIST[@]}"; do
+    while IFS=$'\t' read -r n sha; do
+      [[ -n "${n:-}" ]] && enqueue "$repo" "$n" "$sha" "$1"
+    done < <(merged_heads "$repo")
+  done
+}
+sweep() { enqueue_heads sweep; enqueue_merged merged-sweep; }
+poll()  { enqueue_heads poll;  enqueue_merged merged-poll; }
 
 # SWEEP=0: mark every qualifying head as seen without queuing it, so only
 # what changes from here on is queued.
@@ -143,7 +205,7 @@ seed() {
     while IFS=$'\t' read -r n sha; do
       [[ -n "${n:-}" ]] || continue
       lock; grep -qxF "$repo#$n@$sha" "$SEEN" 2>/dev/null || echo "$repo#$n@$sha" >>"$SEEN"; unlock
-    done < <(heads "$repo")
+    done < <(heads "$repo"; merged_heads "$repo")
   done
 }
 
@@ -261,7 +323,7 @@ watch() {
   trap cleanup EXIT
   trap on_signal INT TERM
   log "targets: ${REPO_LIST[*]}"
-  log "qualifying: open, non-draft, author=$AUTHOR, created within ${PR_DAYS}d"
+  log "qualifying: open, non-draft, author=$AUTHOR, created within ${PR_DAYS}d; plus PRs by $AUTHOR that merge"
   log "queue: $QUEUE"
 
   if [[ "${SWEEP:-1}" = 1 ]]; then
@@ -269,7 +331,7 @@ watch() {
     before=$(grep -c . "$QUEUE" 2>/dev/null); before=${before:-0}
     sweep
     after=$(grep -c . "$QUEUE" 2>/dev/null); after=${after:-0}
-    log "SWEEP=done — $((after - before)) qualifying heads queued, $after pending in total"
+    log "SWEEP=done — $((after - before)) qualifying items queued (open heads + recent merges), $after pending in total"
   else
     seed
     log "SWEEP=skipped — $(grep -c . "$SEEN" 2>/dev/null || echo 0) heads marked seen; only changes from here on are queued"
@@ -280,7 +342,7 @@ watch() {
   echo "$mode" >"$MODE_FILE"
 
   if [[ "$mode" = events ]]; then
-    log "MODE=events — queuing on push/pull_request deliveries; safety-net poll every ${FALLBACK_SWEEP}s"
+    log "MODE=events — queuing on push/pull_request deliveries (new heads and merges); safety-net poll every ${FALLBACK_SWEEP}s"
     while true; do
       snooze "$FALLBACK_SWEEP"
       if ! any_forwarder_alive; then
