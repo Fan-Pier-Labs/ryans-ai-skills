@@ -152,8 +152,11 @@ Rules that keep this honest:
   is not: `eslint --print-config <a real .ts file>` and `tsc --showConfig -p <each tsconfig>`
   resolve the presets and the `extends` chain that make a config's text an unreliable read.
   Read-only invocations only: never `--fix`, `--write`, or
-  `--unsafe-fixes`. If a tool is not installed, say "not installed, not run" rather than
-  guessing what it would say — or run it once from a throwaway location (`npx --yes`, `uvx`)
+  `--unsafe-fixes`. **Q2 is the one question with no acceptable fallback**: the "which files are
+  dead" half needs `knip` (TS/JS) or `vulture` (Python), so if the analyzer summary lists either
+  as skipped, ask the user to install it (`npm i -D knip`, `pipx install vulture`) and say the
+  question is Partial until then — never substitute a grep for it. If a tool is not installed,
+  say "not installed, not run" rather than guessing what it would say — or run it once from a throwaway location (`npx --yes`, `uvx`)
   if the user is fine with that, and label the result as an ad-hoc run.
 - **Count, then cite.** "12 of 47 route handlers have no auth check" beats "auth looks
   inconsistent". Every count needs the command that produced it in the report.
@@ -257,6 +260,10 @@ that change and nothing else. Never batch fixes across questions.
 | "Same 30 lines in three places — extract a helper." | Check whether the three will change together. Coincidental similarity is not duplication, and a premature shared helper is worse than the copies. |
 | "There are circular imports, so the architecture is broken." | Say which cycle and what it costs: broken lazy loading, untestable modules, import-order bugs. A two-file type-only cycle is a nit; a cycle through the core domain is a High. |
 | "`git grep` found no callers, so it's dead code." | Frameworks call by convention and config, not imports. Check decorators, DI, entry points, templates, and dynamic imports first. |
+| "The linter already covers dead code, so Q2 is handled." | It covers the inside of a file. `no-unused-vars` and `noUnusedLocals` are file-local by design and never flag an `export`. The one cross-file rule, `import/no-unused-modules`, is a **no-op on ESLint 10** (the API it needs was removed) and on ESLint 9 flat config only enumerates `.js` — measured, not assumed. Cross-file is knip's job. |
+| "knip listed 300 unused files." | Then its `entry` config is wrong, not the repo. A root its plugins cannot see makes everything behind it look unused. Fix `entry` and re-run; never paste that list into a report. |
+| "knip is clean, so nothing is dead." | Its default treats test files as entry points, so a module whose only consumer is its own test reads as used. Re-run with tests out of `entry` to surface those — that is dead code with a test attached, and both go in one commit. |
+| "vulture is the Python knip." | It is not. vulture matches names, with no import graph, so it answers "is this name used" but never "is this module reachable". The file-level half for Python is yours: walk it from the real entry points and say that you did. |
 | "The file is 3000 lines but it's generated / a schema." | Generated and vendored files are out of scope entirely. Exclude them from every count, and say you did. |
 | "I'll report duplication as a percentage." | Only if a tool measured it on non-vendored, non-generated code. Otherwise report the groups you found and where. |
 | "I couldn't run the linter, so I'll estimate the violations." | Never. "Not installed, not run" is the honest answer. |

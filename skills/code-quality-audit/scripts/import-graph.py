@@ -21,10 +21,34 @@ PY_IMPORT_RE = re.compile(r"^\s*(?:from\s+([.\w]+)\s+import\s+([^\n#]+)|import\s
 
 
 def strip_json_comments(s):
-    s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
-    s = re.sub(r"^\s*//.*$", "", s, flags=re.M)
-    s = re.sub(r",(\s*[}\]])", r"\1", s)
-    return s
+    """JSONC -> JSON, walking the text so a string is never mistaken for a comment.
+
+    The regex version of this ate path aliases: `"@components/*"` opens what looks like a block
+    comment, and the next `*/` is inside `"**/*.ts"` several lines later, so everything between
+    them disappeared and the config came back unparseable. The result was silent — no alias
+    resolved, and every file behind one looked unimported."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if s[j] == "\\":
+                    j += 2; continue
+                if s[j] == '"':
+                    break
+                j += 1
+            out.append(s[i:j + 1]); i = j + 1; continue
+        if c == "/" and i + 1 < n and s[i + 1] == "/":
+            while i < n and s[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and s[i + 1] == "*":
+            end = s.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        out.append(c); i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
 
 
 def load_ts_aliases(root, files):
