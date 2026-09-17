@@ -1,4 +1,4 @@
-# Code quality checklist — the sixteen questions, how to answer each, and what "good" looks like
+# Code quality checklist — the twenty questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -8,6 +8,13 @@ Sources, by trust: a tool's output on non-vendored code → a command you ran (`
 `wc -l`) → reading the file → the config file's claim → what the user told you → your
 impression of the code (label these, or leave them out).
 
+**Altitude.** You already know each language's linters, test runners, coverage tools and clock
+libraries; this file does not re-teach them. It carries what is easy to get wrong instead: which
+patterns are false positives, where the honest threshold sits, what a number has to exclude before
+it means anything, and which findings are candidates rather than verdicts. Where a command appears
+it is because the exact flag or API field matters, not as a substitute for knowing the ecosystem.
+Reach for the tool you know for the stack in front of you.
+
 **Exclude from every count**: `node_modules`, `vendor`, `dist`, `build`, `out`, `.next`,
 `coverage`, `.venv`, `venv`, `target`, `__pycache__`, `Pods`, migrations you did not write,
 `*.min.js`, `*-lock.json`, `*.pb.go`, `*_pb2.py`, `*.g.dart`, `*.generated.*`, snapshots.
@@ -16,7 +23,8 @@ impression of the code (label these, or leave them out).
 Contents: Q1 Lint + type checker · Q2 Dead code · Q3 Endpoint auth · Q4 Dead endpoints ·
 Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types · Q10 CI gates ·
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
-Q15 README · Q16 Baseline lint-rule coverage
+Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
+Q18 Force-push blocked on every branch · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests
 
 ---
 
@@ -292,12 +300,13 @@ where a bug costs something. The shape matters more than the count:
   the clock, then asserts the mock was called, passes forever regardless of the code.
 - Is the **money / auth / migration / permission** logic tested? That is where the value is.
 - Are there **edge cases and failure paths**, or only the happy path?
-- Are they **deterministic** — no `sleep`, no real clock, no shared mutable fixture, no order
-  dependence? Check for `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip` and count them;
-  a suite with 40 skipped tests is a suite with 40 known-broken tests.
-- Coverage: report it only if you measured it (`npm test -- --coverage`, `pytest --cov`,
-  `go test -cover ./...`), and name what is uncovered that matters rather than the headline
-  percentage.
+- Are they **deterministic** — no shared mutable fixture, no order dependence? Check for `.skip`,
+  `.only`, `xit`, `@pytest.mark.skip`, `t.Skip` and count them; a suite with 40 skipped tests is a
+  suite with 40 known-broken tests. Waiting on real time is **Q19**.
+- Do they assert behaviour, or only that the code still looks like itself? That is **Q20**.
+- Coverage is **Q17**, which has a hard recommended floor of 80% on lines and branches and asks
+  whether a threshold enforces it. Answer this question on whether the tests exist, pass, and
+  test behaviour; answer the percentage there.
 
 What good looks like: the suite runs in under a couple of minutes, passes on a clean checkout
 with one documented command, covers every non-trivial branch of the domain logic, and fails
@@ -307,6 +316,7 @@ range is typical of a healthy repo; well outside it in either direction is worth
 The fix, in this order: get the suite green and in CI (a red suite is worse than none, because
 it trains the team to ignore failures), then write tests for the next bug you fix rather than
 retrofitting coverage broadly, starting with auth, money, and anything with a `TODO` near it.
+Only then chase the Q17 number.
 
 ## Q7. Are there integration tests? (recommended: yes)
 
@@ -333,10 +343,18 @@ Do not run these against anything shared. Run them only if they stand up their o
 otherwise report them as present-but-not-executed and say what they need. Never point a test
 suite at a database you did not create.
 
+A Yes needs them to **exist and to run in CI on every PR**, not to exist and be run by hand
+before a release. An integration suite nobody runs rots faster than a unit suite, because the
+service it boots keeps changing underneath it — check Q10 for the job, and check the last few
+merged PRs actually executed it rather than skipping it on a path filter. Where the full tier is
+genuinely too slow for every PR, the Yes requires a fast subset on PRs plus the full tier on a
+schedule, with the schedule's failures going somewhere a human reads.
+
 What good looks like: at least one test that boots the real app and exercises the critical path
 end to end against a real database — signup → login → the one thing the product does → the one
-thing that takes money. Plus one 401/403 test per auth mode. Three good integration tests are
-worth a hundred mocked unit tests for the failures that actually reach production.
+thing that takes money. Plus one 401/403 test per auth mode. Wired into CI as a required check.
+Three good integration tests are worth a hundred mocked unit tests for the failures that
+actually reach production.
 
 The fix: start with one. `supertest`/`TestClient` against the app object with a containerised
 database, covering login plus the main flow, wired into CI. Name the flow in the report.
@@ -426,32 +444,68 @@ The fix: turn strictness on **per directory**, not repo-wide in one PR — `stri
 (the API layer and the DB layer), since that is where types prevent real bugs. Get the CI gate
 in before the backlog is finished, so new code cannot add to it.
 
-## Q10. Does CI gate every PR on lint, types, and tests? (recommended: yes, blocking)
+## Q10. Does CI exist, and does it gate every PR on lint, types, tests, integration tests and coverage? (recommended: yes, blocking)
+
+The first sub-question is the blunt one: **is there any CI at all?** A repo with no workflow file
+fails this outright, and that failure caps Q1, Q6, Q7 and Q17 at Partial no matter how good the
+configuration is, because nothing in the repo is verified by anything but a human remembering to
+run it.
 
 ```bash
-git ls-files .github/workflows/ .gitlab-ci.yml .circleci/ Jenkinsfile azure-pipelines.yml
-grep -nE '^\s*(on|jobs|steps)|pull_request|eslint|tsc|mypy|ruff|test|audit' .github/workflows/*.y*ml
-gh api repos/{owner}/{repo}/branches/main/protection 2>/dev/null   # is it required, or advisory?
-gh pr list --state merged --limit 20 --json number,statusCheckRollup  # did checks actually run?
+# 1. Does CI exist?
+git ls-files .github/workflows/ .gitlab-ci.yml .circleci/ Jenkinsfile azure-pipelines.yml bitbucket-pipelines.yml .buildkite/
+# 2. What does each workflow trigger on, and what does it run?
+grep -nE '^\s*(on|jobs|steps)|pull_request|merge_request|eslint|biome|tsc|mypy|ruff|golangci|clippy|rubocop|test|coverage|cov|playwright|cypress|audit|continue-on-error' .github/workflows/*.y*ml
+# 3. Is it required, or advisory?
+gh api repos/{owner}/{repo}/branches/main/protection 2>/dev/null          # 404 = not protected
+gh api repos/{owner}/{repo}/rulesets 2>/dev/null                          # [] = no rulesets either
+# 4. Did the checks actually run on what was merged?
+gh pr list --state merged --limit 20 --json number,statusCheckRollup
+gh run list --branch main --limit 10 --json name,conclusion,event
 ```
 
-A Yes needs: a workflow that triggers **on pull_request**, runs lint + type check + tests, and
-is **required** by branch protection so a red check blocks merge. A workflow that only runs on
-push to `main`, or that exists but is not required, is a Partial — it tells you after the fact.
-Check that it runs on the whole repo, not one package of a monorepo, and that it is not
-`continue-on-error: true`.
+Every row of this table is part of the answer, and the report reproduces it filled in:
 
-Also record: Dependabot or Renovate present, a dependency/vulnerability scan
-(`npm audit`, `pip-audit`, `govulncheck`, CodeQL, semgrep, trivy), and whether the suite is fast
-enough that people do not routinely merge past it (over ~15 minutes and they will).
+| Gate | Recommended | What a No means |
+|---|---|---|
+| A CI workflow exists | **yes** | nothing is verified automatically; everything below is moot |
+| Triggers on `pull_request` | **yes** | push-to-main-only CI tells you after the fact |
+| Linter runs (Q1, Q16) | **yes, blocking** | style and correctness rules are advisory |
+| Type check runs (Q9) | **yes, blocking** | strict types are an editor feature, not a guarantee |
+| Unit tests run (Q6) | **yes, blocking** | a red suite can merge |
+| Integration tests run (Q7) | **yes, blocking** (or a fast subset on PRs + the full tier scheduled) | the app can stop booting without anyone noticing |
+| Coverage threshold enforced (Q17) | **yes, blocking at ≥ 80%** | coverage drifts down one PR at a time |
+| Dependency audit runs (Q12) | yes (non-blocking is acceptable while a backlog is cleared) | advisories accumulate silently |
+| Required by branch protection or a ruleset | **yes** | every gate above is a suggestion |
+| Force-push blocked on every branch (**Q18**) | **yes** | history can be rewritten or erased; configured in the same place, asked separately |
+| Not `continue-on-error: true` | **yes** | the check is green whatever it found |
+| Runs every package of a monorepo | **yes** | one package is guarded and the others are not |
 
-What good looks like: one required workflow per package, under ten minutes, running lint, types,
-unit tests and a fast integration tier on every PR, with branch protection requiring it and at
-least one review.
+Two traps worth checking by hand. A job that is required but whose steps are guarded by
+`if:` conditions or `paths:` filters can pass without running anything — confirm on a recent
+merged PR that the step actually executed. And a gate that runs the test command **without** the
+coverage flag (`npm test` where the threshold lives in `npm run test:coverage`) enforces nothing;
+the command CI runs must be the command that carries the gate.
 
-The fix: the minimal blocking workflow is a dozen lines — checkout, install with the lockfile,
-`lint`, `typecheck`, `test` — then mark it required in branch protection. If the suite is red
-today, gate on lint and types first and add tests to the gate the day they pass.
+Also record: whether Dependabot or Renovate is configured, and whether the suite is fast enough
+that people do not routinely merge past it — over roughly fifteen minutes and they will.
+
+What good looks like: one required workflow per package, under ten minutes, running lint, type
+check, unit tests, an integration tier and a coverage gate on every pull request, with branch
+protection or a ruleset requiring it and at least one review.
+
+The fix, in this order, because each step is worth having before the next one lands:
+
+1. **Protect the branch.** If CI already exists and is green, requiring it is a settings change
+   measured in minutes and it is the single highest-value fix in this whole checklist.
+2. **Add the missing gates** to the existing workflow — lint first (fastest, and Q16's
+   zero-violation wave makes it green immediately), then type check, then tests.
+3. **Add the coverage gate last**, at one point below today's measured number (Q17), so it goes
+   green on the first run and ratchets from there.
+
+The minimal blocking workflow is a dozen lines: checkout, install from the lockfile, `lint`,
+`typecheck`, `test`. If the suite is red today, gate on lint and types now and add tests to the
+gate the day they pass — never leave a required check that is expected to fail.
 
 ## Q11. Are secrets committed to the repo? (recommended: no)
 
@@ -700,3 +754,337 @@ The five places marked `ADAPT:` in the baseline need the repo's own paths (ignor
 the import-cycle scope, the React globs). The entries marked `DECISION:` are deliberate
 narrowings with the reasoning attached — a repo that has narrowed them differently for a stated
 reason is fine, and a repo that has silently dropped them is not.
+
+## Q17. Is test coverage at least 80%, and is the threshold enforced? (recommended: yes)
+
+Q6 asks whether tests exist and pass; Q7 whether anything boots the real app. This asks how much
+of the code the suite actually executes, and whether anything stops that number sliding down.
+
+**Measure it. Never estimate it**, and never quote a badge or a README figure you did not
+reproduce. If you cannot run the suite with coverage on, the answer is Unknown and you say what
+was missing — a guessed percentage is worse than no percentage.
+
+```bash
+# JS / TS
+npx --no-install vitest run --coverage 2>&1 | tail -20
+npx --no-install jest --coverage --coverageReporters=text-summary 2>&1 | tail -12
+# Python
+pytest --cov --cov-branch --cov-report=term-missing -q 2>&1 | tail -25
+# Go  (no branch coverage; atomic mode counts every statement once)
+go test -covermode=atomic -coverprofile=/tmp/c.out ./... >/dev/null 2>&1 && go tool cover -func=/tmp/c.out | tail -1
+# Rust
+cargo llvm-cov --summary-only 2>&1 | tail -6        # or: cargo tarpaulin --out Stdout
+# Ruby: simplecov prints the total at the end of `bundle exec rspec`
+# Java: ./gradlew jacocoTestReport  → build/reports/jacoco/test/html/index.html
+# C#: dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=json
+
+# Is a threshold configured anywhere, and at what number?
+git grep -nE 'coverageThreshold|coverage\.thresholds|--cov-fail-under|fail_under|minimum_coverage|jacocoTestCoverageVerification|/p:Threshold|--fail-under' \
+  -- '*.json' '*.js' '*.ts' '*.mjs' '*.cfg' '*.ini' '*.toml' '*.yml' '*.yaml' '*.gradle' '*.rb' Makefile
+```
+
+**Two numbers, not one.** Line coverage is what tools print by default; **branch** coverage is
+the one that tells you something, because a file whose every line executes under a single input
+can still have every `if`, every `?:` and every `catch` untested. 85% lines with 45% branches is
+a much weaker suite than the headline suggests. Report both wherever the tool provides both
+(`--cov-branch`, vitest/jest report it by default, Go does not have it at all — say so).
+
+Three things make a headline percentage lie, and each is worth a line in the report:
+
+- **What is in the denominator.** Generated clients, migrations, `__init__.py`, config files,
+  type-only files and vendored code all inflate or deflate the number depending on which side of
+  the include/exclude they land. Read the `collectCoverageFrom` / `coverage.include` / `omit`
+  list before quoting anything, and say what it excludes.
+- **Where the uncovered 20% is.** This is the actual finding. 80% overall with the auth
+  middleware, the payment path, or the migration runner at 0% is worse than 65% spread evenly.
+  Get per-file numbers (`--cov-report=term-missing`, `go tool cover -func`, the HTML report) and
+  name the three lowest-covered files that matter, with their percentages.
+- **Whether the covered lines are asserted.** A test that calls a function and asserts nothing
+  raises coverage and catches no regression. Coverage is a floor on what is *executed*, never
+  evidence that behaviour is *checked* — cross-reference Q6's "tests the mock" question before
+  treating a high number as good news.
+
+**Enforcement is half the question.** A measured 84% with nothing failing the build is a
+Partial: it drifts down one PR at a time, and nobody notices until it starts with a 6. The gate
+belongs in the test command itself so it fails locally too, not only in CI:
+
+| Stack | The gate |
+|---|---|
+| vitest | `coverage: { thresholds: { lines: 80, branches: 80 } }` in `vitest.config.ts` |
+| jest | `coverageThreshold: { global: { lines: 80, branches: 80 } }` |
+| pytest | `--cov-fail-under=80` in `addopts`, plus `[tool.coverage.report] fail_under = 80` |
+| go | no built-in gate; a CI step that parses `go tool cover -func` and exits non-zero |
+| cargo-llvm-cov | `--fail-under-lines 80` |
+| simplecov | `minimum_coverage 80` in `spec_helper.rb` |
+| jacoco | a `jacocoTestCoverageVerification` rule wired into `check` |
+| coverlet | `/p:Threshold=80 /p:ThresholdType=line%2Cbranch` |
+
+Then Q10 checks that the command carrying the gate is the one CI runs on every PR.
+
+**Integration and E2E coverage usually is not counted.** Playwright, Cypress and any suite that
+drives a separate process contribute nothing to a unit-test coverage report unless the run is
+instrumented (`c8`/`nyc` wrapping the server, `coverage run` with `--parallel-mode`, jacoco's
+agent on the app under test). A repo with excellent Q7 coverage can therefore show a low Q17
+number. Say which tiers the figure includes rather than failing the repo for a measurement gap,
+and where combined coverage is achievable, report it.
+
+What good looks like: 80% or better on lines **and** branches for production code, a threshold in
+the test command that fails the build below it, no critical module far below the average, and the
+excludes list short enough to read. Above roughly 90% the marginal test is usually being written
+for the number rather than for a bug, and the effort belongs in Q7 instead.
+
+The fix: ratchet, do not sprint. Measure today's number, set the threshold **one point below it**
+so the build goes green immediately, and raise it as tests land — a threshold set to an
+aspirational 80% on a repo at 55% is a red build the team will delete within a week. Spend the
+first tests on the lowest-covered file that would hurt most if it broke, not on the easiest file
+to cover. If the suite is currently red, Q6 comes first: coverage of a failing suite is a
+meaningless number.
+
+## Q18. Is force-push blocked on every branch, and deletion blocked on the branches that matter? (recommended: every branch; the default branch is the floor)
+
+Every other question on this list is about the quality of the code. This one is about whether the
+code can be **destroyed** — by a rogue engineer, a departing contractor, a compromised token, or
+far more often a tired person running `git push --force` from the wrong directory at 1am. It is
+the cheapest insurance in this checklist and the most frequently absent.
+
+Q10 asks whether branch protection makes CI *required*. This asks whether it makes history
+*immutable*. Same settings page, independent settings: a repo can require every check and still
+allow anyone with write access to erase a year of commits with one command.
+
+**The recommendation is force-push blocked on every branch.** Protecting only the default branch
+is the minimum bar, not the target, and the reasons are not symmetric with how people think about
+risk:
+
+- **Feature branches are where the unbacked-up work lives.** The default branch exists in every
+  teammate's clone, in CI artifacts, and in every fork. A colleague's half-finished branch exists
+  in exactly one place, and a force-push over a shared branch silently destroys their commits.
+  This happens far more often than force-pushing `main`, precisely because nobody thinks a feature
+  branch is dangerous.
+- **Long-lived branches are load-bearing.** `release/*`, `v2.x`, `staging` and hotfix branches are
+  production history under a different name.
+- **A PR branch rewritten after approval is a supply-chain move.** Approve a diff, force-push a
+  different one, merge. Blocking force-push removes the manoeuvre; requiring stale reviews to be
+  dismissed on push (`dismiss_stale_reviews`) closes what remains. Check both.
+- **Default-deny is the posture that survives.** Protect everything, then carve out an exception
+  you can name, rather than protecting one branch and hoping nothing important lives elsewhere.
+
+**Be straight about the cost, because it is real.** Blocking force-push everywhere breaks
+`git rebase` onto a PR branch, amending a commit, and any stacked-PR tool. Teams that run this
+posture resolve it one of two ways, and the report should say which fits: allow force-push on a
+namespaced personal pattern (`users/**`, `dev/**`) that never holds shared work, or move to a
+squash-merge workflow where a branch is never rewritten because its commits are collapsed at merge
+anyway. A recommendation that ignores the rebase workflow will be ignored in turn.
+
+**Deletion is a different question from force-push and should be scoped differently.** Blocking
+deletion on the default branch and on release branches is right; blocking it on every branch
+fights routine cleanup and may interfere with automatic branch deletion after merge. Recommend
+deletion protection where history must survive, not everywhere, and check that the team's
+post-merge cleanup still works after any change.
+
+Read the real configuration rather than assuming — both mechanisms can be in force at once, and
+the ref patterns are the whole answer:
+
+```bash
+O=<owner>; R=<repo>; B=$(gh api repos/$O/$R --jq .default_branch)
+
+# Classic protection is per branch pattern; ask about the default branch specifically.
+gh api "repos/$O/$R/branches/$B/protection" --jq \
+  '{force_push_allowed: .allow_force_pushes.enabled,
+    deletion_allowed:   .allow_deletions.enabled,
+    binds_admins:       .enforce_admins.enabled,
+    dismiss_stale_reviews: .required_pull_request_reviews.dismiss_stale_reviews,
+    required_checks:    (.required_status_checks.contexts // [])}' 2>/dev/null || echo "NOT PROTECTED"
+
+# Rulesets are the modern mechanism, can target every branch at once, and can be set org-wide.
+# `non_fast_forward` IS the force-push block. The ref patterns say how much it covers.
+for id in $(gh api "repos/$O/$R/rulesets" --jq '.[].id'); do
+  gh api "repos/$O/$R/rulesets/$id" --jq \
+    '{name, enforcement, target,
+      include: .conditions.ref_name.include, exclude: .conditions.ref_name.exclude,
+      rules: [.rules[].type],
+      bypass: [.bypass_actors[]? | {actor_type, bypass_mode}]}'
+done
+gh api "orgs/<org>/rulesets" 2>/dev/null        # an org-level ruleset covers every repo at once
+
+# What is actually unprotected right now
+gh api "repos/$O/$R/branches" --paginate --jq '.[] | select(.protected==false) | .name'
+```
+
+Scoring, so the answer is not binary:
+
+| State | Answer |
+|---|---|
+| Force-push blocked on all branches (`~ALL` ruleset or `*` pattern), deletion blocked on default + release branches, binds admins, no standing bypass | **Yes** |
+| Default branch only, properly bound | **Partial** — the floor, and the finding is what is *not* covered |
+| Protection exists but `enforce_admins` is false, or a ruleset has `{OrganizationAdmin, always}` in `bypass_actors` | **No in practice** — see below |
+| Nothing | **No** |
+
+Three traps, in the order they bite:
+
+- **`enforce_admins: false` is the default** when protection is created through the UI without
+  ticking the box, and it is the single most common reason a "protected" branch is not protected.
+- **A ruleset with a standing bypass actor is not protection for that actor.**
+  `{actor_type: "OrganizationAdmin", bypass_mode: "always"}` in a five-person company is everyone.
+  `bypass_mode: "pull_request"` is the narrower, usually-correct form.
+- **Protection covers branches, not the repository.** Blocking force-push does nothing about
+  repository deletion, transfer, or a visibility change. Those live in org settings
+  (`members_can_delete_repositories`) and belong to whoever owns the org — name them in the report
+  even though they are outside this repo.
+
+Recovery, so the report is accurate rather than alarming: a force-push does not immediately erase
+objects on GitHub's side, and a teammate's clone or a CI cache may still hold the old commits, so a
+fast response often recovers everything. But that path depends on the reflog of a machine you do
+not control, or on support finding unreachable objects before they are collected. Treat it as a
+reason to act quickly, never as a substitute for the setting.
+
+What good looks like: an org-level ruleset blocking force-push on every branch of every repo, with
+a named exclusion for personal namespaces if the team rebases; deletion blocked on the default and
+release branches; admins bound with no standing bypass; stale reviews dismissed on push; and one
+honest answer to "if this repository disappeared tonight, where is the other copy?"
+
+The fix. All branches, which is the recommendation, is a ruleset — do it at the org level if you
+own the org, since it then covers repos nobody has thought about yet:
+
+```bash
+gh api -X POST "repos/$O/$R/rulesets" --input - <<'JSON'
+{
+  "name": "no force-push anywhere",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["~ALL"], "exclude": ["refs/heads/users/**"] } },
+  "rules": [ { "type": "non_fast_forward" } ]
+}
+JSON
+```
+
+The default branch alone, which is the floor and takes a minute. The three load-bearing lines are
+`allow_force_pushes`, `allow_deletions` and `enforce_admins` — **drop the
+`required_pull_request_reviews` block on a solo repo**, where requiring an approval means no merge
+is possible without a second account:
+
+```bash
+gh api -X PUT "repos/$O/$R/branches/$B/protection" --input - <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["<the CI check name from Q10>"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": { "required_approving_review_count": 1, "dismiss_stale_reviews": true },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+Setting `enforce_admins` on a one-person repo feels like locking yourself out; it is not — a pull
+request still merges normally, and it is what stops an accidental `--force` on `main`. If
+committing straight to the default branch is the actual workflow, keep force-push and deletion
+blocked and drop the review requirement, rather than skipping protection altogether because the
+review rule felt heavy. Those two settings are the ones that preserve the code, and they cost
+nothing.
+
+## Q19. Do tests wait on real-world time, or is the clock faked? (recommended: faked — no fixed sleeps)
+
+A test that sleeps for two seconds costs two seconds on every run forever, and it is *also* flaky,
+because the duration is a guess about how fast someone else's CI runner will be on a bad day. Too
+short and it fails intermittently; long enough to be safe and the suite crawls. One fix solves
+both: make time something the test controls.
+
+The distinction that matters, because a grep for "timeout" lumps all three together and only one
+is a finding:
+
+| Pattern | Verdict |
+|---|---|
+| **Fixed sleep** — sleeping a hard-coded duration and hoping the thing happened | **finding**: pays the full cost every run and still races on a slow machine |
+| **Polling with a deadline** — waiting on a condition with a timeout as the upper bound | fine: returns the moment the condition holds. A 10-second poll is not slow |
+| **Faked clock** — advancing time programmatically | preferred: a 30-day expiry test runs in a millisecond |
+
+Find every fixed sleep and **add up what they cost**. "31 fixed sleeps totalling 48 seconds per
+run" is a finding a team acts on; "some tests sleep" is not. Confirm it against the suite's own
+slowest-test output rather than the grep alone, since one framework-level timeout can dominate
+everything the grep found.
+
+Then the half of this question that is about production code, and the reason it usually goes
+unfixed: **you can only fake time if the code takes time as a dependency.** Something calling the
+system clock directly several layers down, or a retry helper with a hard-coded backoff and no
+injectable delay, cannot be tested at any speed without global monkey-patching. When tests sleep,
+check whether they sleep because nobody injected a clock — the finding then belongs to the source
+file, not the test.
+
+Also watch for the failure mode that looks like success: a suite that is fast **because the
+time-dependent behaviour is not tested at all**. Nobody tests a 30-day expiry by waiting 30 days,
+so without a fake clock that path simply has no test. If the repo has expiry, TTL, backoff,
+scheduling, debounce, rate-limit windows or session timeouts and no clock-faking tooling anywhere,
+the honest finding is that none of it is covered — and it will show up as a hole in Q17's per-file
+numbers rather than as a slow suite.
+
+Last, check whether retries are configured. A retry count that exists to absorb timing flakiness
+is the suite telling you about this problem in its own words.
+
+What good looks like: no fixed sleeps; waiting expressed as polling on a condition; the clock
+injected in production code and faked in tests, so expiry, backoff and scheduling logic are tested
+exhaustively in milliseconds; no retry configuration compensating for timing.
+
+The fix, cheapest first: replace each fixed sleep with a poll on the condition it was really
+waiting for. That is usually a one-line change and it makes the test faster *and* more reliable at
+once, which is a rare combination worth leading with. Then, for genuinely time-dependent
+behaviour, inject the clock at the boundary that owns it and fake it in the test — every mainstream
+stack has a supported way to do this, including fake timers in the JS test runners, freezing
+libraries in Python, an injected clock interface in Go, and `TimeProvider` in .NET. Do the slowest
+test first and report the seconds saved: a suite dropping from four minutes to forty changes how
+often people run it, which is worth more than the time itself.
+
+## Q20. Are there change-detector tests? (recommended: no)
+
+A change-detector test fails whenever the implementation changes and passes whenever it does not,
+regardless of whether the behaviour is still correct. It is the worst trade in a test suite: it
+charges maintenance on every refactor and buys no confidence, so it makes the code harder to
+change while making nobody safer
+([reference](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html)).
+
+Three shapes, in the order you will find them:
+
+1. **The test restates the implementation.** The expected value is computed by the same logic, the
+   same constant table, or the same helper that production code uses — so the assertion is
+   `f(x) == f(x)` with extra steps, and it cannot fail for the reason you care about. This is the
+   shape from the original article and the hardest to spot with a grep: look for a test that
+   imports the module under test and then uses it to build the value it asserts against, or that
+   mirrors the production branching arm for arm.
+2. **The assertion is an undifferentiated blob.** A snapshot or golden file large enough that
+   nobody reads the diff, so any change is approved by regenerating it. A small, reviewed snapshot
+   of one component is a legitimate test; a 4,000-line snapshot of a whole page is a change
+   detector with a nicer name. Size and reviewability are what separate them, so report the count
+   of snapshots, the largest ones, and whether the scripts or CI regenerate them with an update
+   flag as a habit.
+3. **The assertion is about calls, not outcomes.** A test whose only assertions are that mocks
+   were called, in an order, with exact arguments, is pinned to the current call graph rather than
+   to behaviour. Verifying a call *is* right when the call is the observable contract at a
+   boundary you own — "an email was sent to this address" is real — but a verification of an
+   internal collaborator is just the implementation written twice.
+
+The strongest mechanical signal is **lockstep churn**: a test file that changes in nearly every
+commit that touches its source file. A test coupled to behaviour changes when the behaviour
+changes, which is much rarer than the implementation changing. Compute the ratio from the git
+history — commits touching both, over commits touching the source — and treat anything near 1.0 as
+a candidate worth opening, especially if the file also carries snapshots or mock verification. It
+is a candidate rather than a verdict: a file under active feature development legitimately moves
+together with its tests, so read the commits before calling it.
+
+Why this matters more than it sounds: these tests are the main reason a team stops refactoring.
+Every cleanup turns into a second, larger diff in the test suite, the review gets harder, and the
+rational response is to leave the code alone. A suite of change detectors also reports a healthy
+Q17 number while catching nothing, which is why this question and the coverage question have to be
+read together.
+
+What good looks like: tests assert observable behaviour — a return value, a state change, a
+message sent — against expected values a human wrote down; snapshots are small, few, and reviewed
+in the diff; mock verification appears only at real boundaries; and a refactor that preserves
+behaviour leaves the test suite untouched. That last sentence is the whole test for this question,
+and it is worth asking the team directly: when you last restructured something, how much of the
+diff was tests?
+
+The fix, per test: work out what observable behaviour it was meant to protect and assert that
+instead, with a hand-written expected value. Shrink an oversized snapshot to the fields that
+actually matter rather than deleting the test. Replace call verification with an assertion about
+the outcome the call produces. Where a test protects nothing but the current shape of the code,
+delete it — an empty slot is more honest than a test that must be edited to make any change, and
+coverage lost this way is coverage that was never real.

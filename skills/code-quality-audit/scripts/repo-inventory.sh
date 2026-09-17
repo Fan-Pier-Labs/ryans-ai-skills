@@ -50,9 +50,19 @@ if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     slug=$(git -C "$REPO" remote get-url origin 2>/dev/null | sed -E 's#^(git@|ssh://[^@/]+@|https?://)[^/:]+[:/]##; s#/$##; s#\.git$##')
     def=$(git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##'); [ -z "$def" ] && def=main
     if [[ "$slug" =~ ^[^/]+/[^/]+$ ]]; then
-      gh api "repos/$slug/branches/$def/protection" > "$OUT/branch-protection.json" 2>/dev/null \
-        && echo "  branch protection on $def: read (see branch-protection.json)" \
-        || { echo '{"error":"not readable (no protection, no permission, or not GitHub)"}' > "$OUT/branch-protection.json"; echo "  branch protection: not readable"; }
+      # Q10 + Q18: required checks, and whether force-push/deletion are blocked and bind admins.
+      # A 404 "Branch not protected" is the finding, not a tooling failure — it is recorded as such.
+      if gh api "repos/$slug/branches/$def/protection" > "$OUT/branch-protection.json" 2>"$OUT/.bp.err"; then
+        echo "  branch protection on $def: read (see branch-protection.json)"
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); g=lambda k:bool((d.get(k) or {}).get("enabled")); print(f"    force-push allowed: {g(\"allow_force_pushes\")} | deletion allowed: {g(\"allow_deletions\")} | binds admins: {g(\"enforce_admins\")}")' "$OUT/branch-protection.json" || true
+      else
+        python3 -c 'import json,sys; print(json.dumps({"error": sys.stdin.read().strip()[:300]}))' < "$OUT/.bp.err" > "$OUT/branch-protection.json"
+        echo "  branch protection on $def: NOT READABLE — $(head -c 120 "$OUT/.bp.err" | tr -d '\n')"
+        echo "    (if that says 'Branch not protected', the default branch is unprotected — Q18 finding)"
+      fi
+      rm -f "$OUT/.bp.err"
+      gh api "repos/$slug/rulesets" > "$OUT/rulesets.json" 2>/dev/null || echo '[]' > "$OUT/rulesets.json"
+      echo "  rulesets: $(python3 -c 'import json;print(len(json.load(open(__import__("sys").argv[1]))))' "$OUT/rulesets.json" 2>/dev/null || echo 0) found"
     fi
   fi
 else
@@ -73,3 +83,5 @@ echo "== digest =="
 python3 "$HERE/quality-digest.py" "$REPO" "$OUT"
 echo
 echo "Read $OUT/DIGEST.md first; the JSON and tool-*.txt next to it are the evidence."
+echo "Q17 (the coverage %) still needs the suite run with coverage on, and Q18 needs each ruleset's"
+echo "rules[].type and bypass_actors read — both are in references/quality-checklist.md."
