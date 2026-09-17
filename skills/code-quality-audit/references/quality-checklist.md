@@ -24,7 +24,7 @@ Contents: Q1 Lint + type checker · Q2 Dead code · Q3 Endpoint auth · Q4 Dead 
 Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types · Q10 CI gates ·
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
 Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
-Q18 Force-push and deletion blocked · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests
+Q18 Force-push blocked on every branch · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests
 
 ---
 
@@ -477,7 +477,7 @@ Every row of this table is part of the answer, and the report reproduces it fill
 | Coverage threshold enforced (Q17) | **yes, blocking at ≥ 80%** | coverage drifts down one PR at a time |
 | Dependency audit runs (Q12) | yes (non-blocking is acceptable while a backlog is cleared) | advisories accumulate silently |
 | Required by branch protection or a ruleset | **yes** | every gate above is a suggestion |
-| Force-push and deletion blocked (**Q18**) | **yes** | history can be rewritten or erased; configured in the same place, asked separately |
+| Force-push blocked on every branch (**Q18**) | **yes** | history can be rewritten or erased; configured in the same place, asked separately |
 | Not `continue-on-error: true` | **yes** | the check is green whatever it found |
 | Runs every package of a monorepo | **yes** | one package is guarded and the others are not |
 
@@ -840,7 +840,7 @@ first tests on the lowest-covered file that would hurt most if it broke, not on 
 to cover. If the suite is currently red, Q6 comes first: coverage of a failing suite is a
 meaningless number.
 
-## Q18. Is the default branch's history protected from force-push and deletion? (recommended: yes)
+## Q18. Is force-push blocked on every branch, and deletion blocked on the branches that matter? (recommended: every branch; the default branch is the floor)
 
 Every other question on this list is about the quality of the code. This one is about whether the
 code can be **destroyed** — by a rogue engineer, a departing contractor, a compromised token, or
@@ -848,82 +848,126 @@ far more often a tired person running `git push --force` from the wrong director
 the cheapest insurance in this checklist and the most frequently absent.
 
 Q10 asks whether branch protection makes CI *required*. This asks whether it makes history
-*immutable*. They are configured in the same place and are independent settings: a repo can
-require every check and still allow anyone with write access to erase a year of commits with one
-command.
+*immutable*. Same settings page, independent settings: a repo can require every check and still
+allow anyone with write access to erase a year of commits with one command.
+
+**The recommendation is force-push blocked on every branch.** Protecting only the default branch
+is the minimum bar, not the target, and the reasons are not symmetric with how people think about
+risk:
+
+- **Feature branches are where the unbacked-up work lives.** The default branch exists in every
+  teammate's clone, in CI artifacts, and in every fork. A colleague's half-finished branch exists
+  in exactly one place, and a force-push over a shared branch silently destroys their commits.
+  This happens far more often than force-pushing `main`, precisely because nobody thinks a feature
+  branch is dangerous.
+- **Long-lived branches are load-bearing.** `release/*`, `v2.x`, `staging` and hotfix branches are
+  production history under a different name.
+- **A PR branch rewritten after approval is a supply-chain move.** Approve a diff, force-push a
+  different one, merge. Blocking force-push removes the manoeuvre; requiring stale reviews to be
+  dismissed on push (`dismiss_stale_reviews`) closes what remains. Check both.
+- **Default-deny is the posture that survives.** Protect everything, then carve out an exception
+  you can name, rather than protecting one branch and hoping nothing important lives elsewhere.
+
+**Be straight about the cost, because it is real.** Blocking force-push everywhere breaks
+`git rebase` onto a PR branch, amending a commit, and any stacked-PR tool. Teams that run this
+posture resolve it one of two ways, and the report should say which fits: allow force-push on a
+namespaced personal pattern (`users/**`, `dev/**`) that never holds shared work, or move to a
+squash-merge workflow where a branch is never rewritten because its commits are collapsed at merge
+anyway. A recommendation that ignores the rebase workflow will be ignored in turn.
+
+**Deletion is a different question from force-push and should be scoped differently.** Blocking
+deletion on the default branch and on release branches is right; blocking it on every branch
+fights routine cleanup and may interfere with automatic branch deletion after merge. Recommend
+deletion protection where history must survive, not everywhere, and check that the team's
+post-merge cleanup still works after any change.
+
+Read the real configuration rather than assuming — both mechanisms can be in force at once, and
+the ref patterns are the whole answer:
 
 ```bash
 O=<owner>; R=<repo>; B=$(gh api repos/$O/$R --jq .default_branch)
 
-# Classic branch protection: is force-push and deletion blocked, and does it bind admins?
+# Classic protection is per branch pattern; ask about the default branch specifically.
 gh api "repos/$O/$R/branches/$B/protection" --jq \
   '{force_push_allowed: .allow_force_pushes.enabled,
     deletion_allowed:   .allow_deletions.enabled,
     binds_admins:       .enforce_admins.enabled,
-    required_checks:    (.required_status_checks.contexts // []),
-    linear_history:     .required_linear_history.enabled}' 2>/dev/null || echo "NOT PROTECTED"
+    dismiss_stale_reviews: .required_pull_request_reviews.dismiss_stale_reviews,
+    required_checks:    (.required_status_checks.contexts // [])}' 2>/dev/null || echo "NOT PROTECTED"
 
-# Rulesets are the newer mechanism and can coexist. `non_fast_forward` IS the force-push block.
-gh api "repos/$O/$R/rulesets" --jq '.[] | {id, name, enforcement, target}'
+# Rulesets are the modern mechanism, can target every branch at once, and can be set org-wide.
+# `non_fast_forward` IS the force-push block. The ref patterns say how much it covers.
 for id in $(gh api "repos/$O/$R/rulesets" --jq '.[].id'); do
   gh api "repos/$O/$R/rulesets/$id" --jq \
-    '{name, enforcement, refs: .conditions.ref_name.include,
+    '{name, enforcement, target,
+      include: .conditions.ref_name.include, exclude: .conditions.ref_name.exclude,
       rules: [.rules[].type],
       bypass: [.bypass_actors[]? | {actor_type, bypass_mode}]}'
 done
+gh api "orgs/<org>/rulesets" 2>/dev/null        # an org-level ruleset covers every repo at once
 
-# Who can push at all, and who could bypass whatever is configured
-gh api "repos/$O/$R/collaborators?permission=push" --jq '.[].login' 2>/dev/null
-gh api "repos/$O/$R" --jq '{archived, is_template, visibility, delete_branch_on_merge}'
-
-# Tags: a release is keyed on a tag, so a moved tag changes what a published version points at
-gh api "repos/$O/$R/rulesets" --jq '.[] | select(.target=="tag") | .name' 
+# What is actually unprotected right now
+gh api "repos/$O/$R/branches" --paginate --jq '.[] | select(.protected==false) | .name'
 ```
 
-What each finding means:
+Scoring, so the answer is not binary:
 
-| Setting | Recommended | What a No allows |
-|---|---|---|
-| `allow_force_pushes` / no `non_fast_forward` rule | **blocked** | anyone with write access rewrites or deletes any commit on the default branch |
-| `allow_deletions` / no `deletion` rule | **blocked** | the default branch itself can be deleted |
-| `enforce_admins` (classic) or empty `bypass_actors` (rulesets) | **on / empty** | protection applies to everyone except the people most likely to have a bad day; in a small team where everyone is an admin this makes the whole thing decorative |
-| Tag protection on `v*` / release tags | **yes** if releases are cut from tags | a tag is moved and a published release silently points at different code |
-| Org setting: members cannot delete repositories | **yes** | force-push protection is moot if the whole repo can be deleted |
-| A second copy exists (mirror, or any clone that is fetched regularly) | **yes** | recovery depends entirely on GitHub |
+| State | Answer |
+|---|---|
+| Force-push blocked on all branches (`~ALL` ruleset or `*` pattern), deletion blocked on default + release branches, binds admins, no standing bypass | **Yes** |
+| Default branch only, properly bound | **Partial** — the floor, and the finding is what is *not* covered |
+| Protection exists but `enforce_admins` is false, or a ruleset has `{OrganizationAdmin, always}` in `bypass_actors` | **No in practice** — see below |
+| Nothing | **No** |
 
 Three traps, in the order they bite:
 
-- **A ruleset with a bypass actor is not protection for the actor listed.** Read
-  `bypass_actors`: `{actor_type: "OrganizationAdmin", bypass_mode: "always"}` means every org
-  admin can force-push, which in a five-person company is everyone. `bypass_mode: "pull_request"`
-  is the narrower, usually-correct form.
 - **`enforce_admins: false` is the default** when protection is created through the UI without
-  ticking the box, and it is the single most common reason a protected branch is not protected.
-- **Protection covers the branch, not the repository.** Blocking force-push does nothing about
-  repository deletion, transfer, or visibility change. Those live in the org's settings
-  (`members_can_delete_repositories`, `members_can_delete_issues`) and belong to whoever owns the
-  org — worth naming in the report even though it is outside this repo.
+  ticking the box, and it is the single most common reason a "protected" branch is not protected.
+- **A ruleset with a standing bypass actor is not protection for that actor.**
+  `{actor_type: "OrganizationAdmin", bypass_mode: "always"}` in a five-person company is everyone.
+  `bypass_mode: "pull_request"` is the narrower, usually-correct form.
+- **Protection covers branches, not the repository.** Blocking force-push does nothing about
+  repository deletion, transfer, or a visibility change. Those live in org settings
+  (`members_can_delete_repositories`) and belong to whoever owns the org — name them in the report
+  even though they are outside this repo.
 
-Recovery, so the report is accurate about consequences rather than alarming: a force-push does not
-immediately erase objects on GitHub's side, and any teammate's clone or CI cache may still hold
-the old commits, so a fast response often recovers everything. But the recovery path is unreliable
-— it depends on the reflog of a machine you do not control, or on GitHub support finding
-unreachable objects before they are garbage-collected. Treat it as a reason to act quickly, never
-as a substitute for the setting.
+Recovery, so the report is accurate rather than alarming: a force-push does not immediately erase
+objects on GitHub's side, and a teammate's clone or a CI cache may still hold the old commits, so a
+fast response often recovers everything. But that path depends on the reflog of a machine you do
+not control, or on support finding unreachable objects before they are collected. Treat it as a
+reason to act quickly, never as a substitute for the setting.
 
-What good looks like: on the default branch, force-push blocked, deletion blocked, protection
-binding administrators with no standing bypass actor, required status checks from Q10, and — if
-releases are cut from tags — a tag ruleset on the release pattern. Plus one honest answer to "if
-this repository disappeared tonight, where is the other copy?"
+What good looks like: an org-level ruleset blocking force-push on every branch of every repo, with
+a named exclusion for personal namespaces if the team rebases; deletion blocked on the default and
+release branches; admins bound with no standing bypass; stale reviews dismissed on push; and one
+honest answer to "if this repository disappeared tonight, where is the other copy?"
 
-The fix, and this is minutes of work, not a project:
+The fix. All branches, which is the recommendation, is a ruleset — do it at the org level if you
+own the org, since it then covers repos nobody has thought about yet:
+
+```bash
+gh api -X POST "repos/$O/$R/rulesets" --input - <<'JSON'
+{
+  "name": "no force-push anywhere",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["~ALL"], "exclude": ["refs/heads/users/**"] } },
+  "rules": [ { "type": "non_fast_forward" } ]
+}
+JSON
+```
+
+The default branch alone, which is the floor and takes a minute. The three load-bearing lines are
+`allow_force_pushes`, `allow_deletions` and `enforce_admins` — **drop the
+`required_pull_request_reviews` block on a solo repo**, where requiring an approval means no merge
+is possible without a second account:
 
 ```bash
 gh api -X PUT "repos/$O/$R/branches/$B/protection" --input - <<'JSON'
 {
   "required_status_checks": { "strict": true, "contexts": ["<the CI check name from Q10>"] },
   "enforce_admins": true,
-  "required_pull_request_reviews": { "required_approving_review_count": 1 },
+  "required_pull_request_reviews": { "required_approving_review_count": 1, "dismiss_stale_reviews": true },
   "restrictions": null,
   "allow_force_pushes": false,
   "allow_deletions": false
@@ -931,12 +975,12 @@ gh api -X PUT "repos/$O/$R/branches/$B/protection" --input - <<'JSON'
 JSON
 ```
 
-Setting `enforce_admins` on a one-person repo will feel like locking yourself out; it is not — a
-pull request still merges normally, and it is what stops an accidental `--force` on `main`. If
-solo-committing directly to the default branch is the actual workflow, block force-push and
-deletion and leave the review requirement off, rather than skipping protection altogether because
-the review rule felt heavy. Those two settings are the ones that preserve the code, and they cost
-nothing to have on.
+Setting `enforce_admins` on a one-person repo feels like locking yourself out; it is not — a pull
+request still merges normally, and it is what stops an accidental `--force` on `main`. If
+committing straight to the default branch is the actual workflow, keep force-push and deletion
+blocked and drop the review requirement, rather than skipping protection altogether because the
+review rule felt heavy. Those two settings are the ones that preserve the code, and they cost
+nothing.
 
 ## Q19. Do tests wait on real-world time, or is the clock faked? (recommended: faked — no fixed sleeps)
 
@@ -994,8 +1038,8 @@ often people run it, which is worth more than the time itself.
 A change-detector test fails whenever the implementation changes and passes whenever it does not,
 regardless of whether the behaviour is still correct. It is the worst trade in a test suite: it
 charges maintenance on every refactor and buys no confidence, so it makes the code harder to
-change while making nobody safer. The name comes from Google's 2015 "Testing on the Toilet" note
-of the same title.
+change while making nobody safer
+([reference](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html)).
 
 Three shapes, in the order you will find them:
 

@@ -50,7 +50,7 @@ time.>
 | 15 | README covers setup/run/test | | Low | <install only; test command is stale> |
 | 16 | Baseline ESLint rules enabled (TS/JS) | <n>% / N/A | High below ~80% | <62/105 as error; promise group absent> |
 | 17 | Test coverage ≥ 80%, threshold enforced | <n>% lines / <n>% branches | High | <71% lines, 48% branches, no threshold; auth/ at 12%> |
-| 18 | Force-push + deletion blocked on the default branch | | **High** | <not protected at all / protected but enforce_admins false> |
+| 18 | Force-push blocked on every branch (default branch is the floor) | | **High** | <default only / not protected at all / enforce_admins false> |
 | 19 | Clock faked, no fixed sleeps in tests | | Medium | <31 fixed sleeps = 48 s/run; no fake-timer tooling> |
 | 20 | No change-detector tests | | Medium | <4 snapshots over 1k lines; 6 files change in lockstep with their source> |
 
@@ -217,9 +217,13 @@ and what was missing, and answer Unknown rather than estimating.>
 
 ## Q18. History protection — <Answer>
 
+**Coverage:** <every branch (`~ALL` ruleset) / default branch only / none> · **Unprotected
+branches right now:** <list, or none>
+
 | Setting | State | Evidence |
 |---|---|---|
-| Force-push blocked (`allow_force_pushes` false / `non_fast_forward` rule) | | |
+| Force-push blocked on **every** branch | | <ruleset ref patterns> |
+| Force-push blocked on the default branch (the floor) | | |
 | Deletion blocked (`allow_deletions` false / `deletion` rule) | | |
 | Binds admins (`enforce_admins` true / no standing `bypass_actors`) | | |
 | Required checks present (from Q10) | | |
@@ -265,8 +269,8 @@ team: when you last refactored, how much of the diff was tests?>
 
 ## Recommended sequence
 
-**Today (minutes to hours, no risk):** <block force-push and deletion on the default branch and
-set enforce_admins; add the auth guard to the 4 open routes; rotate the committed key; turn the CI
+**Today (minutes to hours, no risk):** <add the `~ALL` no-force-push ruleset, or at minimum block
+force-push and deletion on the default branch, and set enforce_admins; add the auth guard to the 4 open routes; rotate the committed key; turn the CI
 workflow on for pull_request and mark it required; set the coverage threshold one point below
 today's measured number; commit the <n> zero-violation baseline lint rules as ratchets>
 **This week (a day or two):** <one integration test that boots the app; strict types in the api
