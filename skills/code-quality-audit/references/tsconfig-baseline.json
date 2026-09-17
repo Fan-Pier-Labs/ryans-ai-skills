@@ -1,0 +1,227 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Baseline tsconfig — the compiler checks Q21 measures a repo against.
+//
+// This file is a REFERENCE, not the tsconfig for this repo (which is bash,
+// python and markdown). It is the union of the compiler options two production
+// TypeScript repos have landed, one check at a time, with their project-shaped
+// settings (paths, lib, include, jsx, types) reduced to ADAPT markers:
+//
+//   - a Bun monorepo on TS 6 — Node scrapers, a Next app, an Expo app, a
+//     published npm package, a Vite splash site: six tsconfigs, one per project
+//   - an Electron app on TS 5.7 — main, renderer, preload, tests, scripts:
+//     one tsconfig
+//
+// Q21 in `quality-checklist.md` asks what percent of the 23 checks below the
+// repo under review has on. Recommended: 100%.
+//
+// **Neither origin repo has all 23 on in every project.** `verbatimModuleSyntax`
+// is on across the monorepo and absent from the Electron app;
+// `noPropertyAccessFromIndexSignature` and `noUncheckedSideEffectImports` are on
+// in the Electron app and not yet in the monorepo. The baseline is their union
+// because that is the bar both are walking toward, a round at a time — which is
+// also what makes it a fair thing to measure a third repo against. A repo at
+// 18/23 is not failing; a repo at 9/23 has never had this conversation.
+//
+// Why compiler options and not just `strict: true`: `strict` is nine checks,
+// and the nine it does NOT include are where the interesting bugs are.
+// `arr[0]` typed as `T` when the array is empty, a `switch` that falls through,
+// an `async` function with a code path that returns nothing, an
+// `{ patientId: undefined }` reaching a request body where the key should be
+// absent, an `override` that silently stops overriding when the base method is
+// renamed — every one of those compiles under `strict` alone.
+//
+// Why this is a separate question from Q16's ESLint baseline: tsc and ESLint
+// catch different halves. The compiler sees every file it is pointed at, always,
+// with no config for a rule to be missing from — but it only knows about
+// type-level facts. Type-aware ESLint rules see intent (a floating promise, a
+// `.sort()` with no comparator). A repo can be at 100% on one and 30% on the
+// other; measure both.
+//
+// ── How to adopt it without a 4,000-error wall ──────────────────────────────
+// Same wave method as the ESLint baseline, and the same canary discipline, with
+// one trap that is specific to compiler options:
+//   1. Check whether the flag is ALREADY SET first: `grep -n '"<flag>"' <tsconfig>`,
+//      and remember that `"strict": true` turns on the whole Group A list below.
+//      A flag that is already on reports zero errors BECAUSE it is already on,
+//      and that zero says nothing about the flag. "Enabling" it then adds a
+//      duplicate JSON key that reads as new coverage while changing nothing —
+//      JSON takes the last one, so it is silent rather than an error.
+//   2. Measure one flag at a time, from the command line, without editing the file:
+//        npx tsc --noEmit -p <tsconfig> --<flag> 2>&1 | grep -cE 'error TS'
+//   3. Zero errors → plant a violation the flag must reject, watch it fail,
+//      delete it, then commit the flag as a ratchet. It costs no code changes
+//      today and stops the first instance from ever arriving.
+//   4. What is left has real errors. Fix per flag, smallest count first, one PR
+//      per flag — the per-fix behaviour analysis is what review is actually for,
+//      and it is unreadable when two flags are in the same diff.
+//   5. Every project in a monorepo separately. One `"strict": false` in a leaf
+//      config is where the bugs live, and the root config's strictness says
+//      nothing about a package that does not extend it.
+// `enable-more-lint-or-ts-checks` is this loop as a skill; hand it this file.
+//
+// ── Reading the groups ─────────────────────────────────────────────────────
+// A — the 9 checks `strict` turns on, set by one option.
+// B — the 7 correctness checks `strict` leaves off. The real differentiators.
+// C — the 6 dead-code and module-honesty checks.
+// D — the 1 hygiene check that must not be turned off.
+// Then: the project-shaped settings (ADAPT, not scored), and the options
+// deliberately NOT in the baseline with the reason for each.
+//
+// Comments belong in the file: tsconfig.json is JSONC, tsc parses it with
+// comments, and every non-obvious flag in both origin repos carries its WHY
+// inline. Keep that when you copy this.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  "compilerOptions": {
+    // ── Group A: the strict family — 9 checks, 1 option ────────────────────
+    // alwaysStrict · noImplicitAny · noImplicitThis · strictBindCallApply ·
+    // strictBuiltinIteratorReturn (TS 5.6+) · strictFunctionTypes ·
+    // strictNullChecks · strictPropertyInitialization ·
+    // useUnknownInCatchVariables.
+    // Set the family, never the members: listing them individually is how a
+    // repo ends up with eight of nine on and no one able to say which is
+    // missing. If one genuinely has to be off during a migration, set `strict`
+    // and turn that ONE off below it with a comment and a tracking issue.
+    "strict": true,
+
+    // ── Group B: the 7 correctness checks `strict` does not include ────────
+
+    // `arr[0]` is `T | undefined`, not `T`. The single highest-value flag here:
+    // every off-by-one, every empty-array assumption, every `.find()` result
+    // used without a check becomes a compile error instead of a 3am
+    // `Cannot read properties of undefined`.
+    // Cost: real. Expect the largest error count of anything in this file, and
+    // expect most fixes to be a genuine missing check rather than noise.
+    "noUncheckedIndexedAccess": true,
+
+    // `a?: string` means absent-or-string, not "may be explicitly undefined" — so an
+    // `{ patientId: undefined }` can't slip into a request payload where the key should be absent.
+    "exactOptionalPropertyTypes": true,
+
+    // A function with a code path that falls off the end returns `undefined`
+    // whatever its annotation says. Catches the branch someone forgot to
+    // `return` in — typically an early-exit guard added later.
+    "noImplicitReturns": true,
+
+    // The missing `break`. Deliberate fallthrough stays legal: put the cases
+    // adjacent with no statements between them.
+    "noFallthroughCasesInSwitch": true,
+
+    // `override` must be written, so renaming a base method breaks the
+    // subclasses at compile time instead of leaving them as dead methods that
+    // are never called again and look fine.
+    "noImplicitOverride": true,
+
+    // `cfg.someKey` only compiles when `someKey` is declared; anything reached
+    // through an index signature must be `cfg["someKey"]`. The distinction is
+    // "I know this key exists" versus "I am hoping" — worth the noise anywhere
+    // config, env or parsed JSON is read by dotted access.
+    // Cost: mechanical, and the fix is a bracket. This is the flag most often
+    // scoped to `src/config/**` first when the count is large.
+    "noPropertyAccessFromIndexSignature": true,
+
+    // TS 5.6+. `import "./side-effect"` is type-checked instead of silently
+    // resolving to nothing — a bare import of a path that does not exist is
+    // otherwise invisible to the compiler and fails at runtime.
+    "noUncheckedSideEffectImports": true,
+
+    // ── Group C: dead code and honest modules — 6 checks ───────────────────
+
+    // Unused locals and parameters are the compiler's half of Q2. Prefix with
+    // `_` for the deliberate ones (an unused first parameter, a destructured
+    // rest-omit); tsc honours the underscore convention.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // Code after a `return`/`throw`, and labels nothing jumps to. Both default
+    // to a *suggestion* the editor greys out and the build ignores; these two
+    // lines are what make them errors. Near-zero cost, and unreachable code is
+    // almost always a merge artifact or a guard that moved.
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+
+    // Imports are erased exactly as written: a type-only import must say
+    // `import type`. Removes the whole class of bug where a transpiler drops an
+    // import that was load-bearing for a side effect, or keeps one that pulls a
+    // heavy module into the bundle for a type nobody needed at runtime.
+    // Cost: a mechanical sweep of `import type` — large diff, zero behaviour
+    // change, and `--fix` territory for the `consistent-type-imports` lint rule
+    // in the ESLint baseline, which is the same check from the other side.
+    "verbatimModuleSyntax": true,
+
+    // Every file must be safely transpilable alone — no `const enum` across
+    // files, no re-export of a type without `export type`. Required by every
+    // single-file transpiler (esbuild, swc, Bun, Vite) and the thing that makes
+    // "it type-checks but the bundle is wrong" impossible.
+    "isolatedModules": true,
+
+    // ── Group D: hygiene — 1 check ────────────────────────────────────────
+
+    // Defaults to true since TS 5.0, so the finding is a repo that turned it
+    // OFF. An import that differs only in case works on macOS and Windows and
+    // fails in Linux CI and production.
+    "forceConsistentCasingInFileNames": true,
+
+    // ── Not scored: deliberate loosening ──────────────────────────────────
+
+    // NOT a check — this turns one off, and it is in the baseline because both
+    // origin repos set it and are right to. Type errors inside `node_modules`
+    // are not your bugs, cannot be fixed from your repo, and a single dependency
+    // shipping broken `.d.ts` files otherwise takes your whole typecheck down.
+    // The cost is real and worth naming: a dependency whose types disagree with
+    // your usage is caught at the call site, not at the declaration.
+    "skipLibCheck": true,
+
+    // ── Not scored: project shape. ADAPT every line below. ────────────────
+    // These decide what the compiler targets and where it looks, not how
+    // strictly it checks. They are here so the file is a working tsconfig, not
+    // because a repo should match them — a Next app, an Expo app and a Node
+    // service disagree about every one of them and all three can be at 23/23.
+    "target": "ES2022",                  // ADAPT: the oldest runtime you support
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],  // ADAPT: drop DOM for a Node-only project
+    "module": "ESNext",                  // ADAPT
+    "moduleResolution": "bundler",       // ADAPT: "nodenext" when Node resolves your imports
+    "jsx": "react-jsx",                  // ADAPT: remove for a non-React project
+    "types": ["node"],                   // ADAPT: the global type packages, listed explicitly
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "noEmit": true                       // ADAPT: this config type-checks only; a bundler emits
+  },
+
+  // ADAPT: every directory with TypeScript in it — tests and scripts included.
+  // A file outside `include` is not checked by anything, and the percentage this
+  // file measures is meaningless over a config that only covers `src/`. Check
+  // the coverage before quoting a score: `npx tsc -p <tsconfig> --listFiles`.
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist", "out"]
+
+  // ── Considered, and deliberately not in the baseline ───────────────────────
+  //
+  // Not scored, and a repo is not penalised for leaving these off. Listed so
+  // "why isn't X here" has an answer on file rather than being re-litigated
+  // every round.
+  //
+  // erasableSyntaxOnly (TS 5.8+) — bans enums, namespaces and constructor
+  //   parameter properties so the code runs under Node's and Bun's type
+  //   stripping. A real constraint for a project that needs it and a pointless
+  //   amputation for one that does not. Enable it because you strip types, not
+  //   because it is strict.
+  // isolatedDeclarations (TS 5.5+) — forces an explicit type annotation on every
+  //   export so `.d.ts` files can be generated per file without the checker.
+  //   Earns its enormous diff only in a published library that is slow to build.
+  //   The npm package in the origin monorepo does not have it on.
+  // noEmitOnError — a build-behaviour flag, not a check: it changes what a
+  //   failed build leaves behind. Irrelevant under `noEmit`, and CI failing the
+  //   typecheck step is the actual gate (Q10).
+  // checkJs / allowJs: false — worth knowing about, but the honest finding for a
+  //   repo with untyped `.js` islands is Q9's (those files are unchecked),
+  //   not a missing flag. `allowJs: true` in the origin monorepo's root config
+  //   is deliberate.
+  // skipLibCheck: false — see above. Recommending it would be recommending that
+  //   a dependency's broken types can break your build.
+  // declaration / declarationMap / sourceMap — output, not checking.
+  // strictNullChecks, noImplicitAny, useUnknownInCatchVariables, and the rest of
+  //   Group A — already covered by `strict`. A repo that sets them individually
+  //   instead of `strict` scores the ones it set, and the finding is the ones it
+  //   did not.
+}

@@ -49,10 +49,31 @@ cat CLAUDE.md 2>/dev/null | grep -iA5 'verify'; jq -r '.scripts' package.json
 
 ## Where to find candidates
 
-- Diff the current ESLint config and tsconfig against what typescript-eslint's
-  `strict`/`stylistic` type-checked presets and the TS compiler's full strictness
-  surface offer. Anything not enabled is a candidate — but **read the files before
-  assuming**; `strict` alone implies a long list of flags.
+**Start from the two vendored baselines**, which are the candidate list already
+written down, each option with the reasoning attached and the options deliberately
+left out named with their reason:
+
+| Baseline | What it holds | Diff against |
+|---|---|---|
+| [`../code-quality-audit/references/tsconfig-baseline.json`](../code-quality-audit/references/tsconfig-baseline.json) | 23 compiler checks set by 15 options | `tsc --showConfig -p <tsconfig>`, per project |
+| [`../code-quality-audit/references/eslint-baseline.config.mjs`](../code-quality-audit/references/eslint-baseline.config.mjs) | 105 ESLint rules, type-aware half included | `eslint --print-config <a real .ts file>` |
+
+Diff the **effective** config against each, never the config file's text: `extends`
+pulls options in from a base config or a package, `strict` expands into nine more,
+and most lint rules arrive through presets — none of which is visible in the file.
+`--showConfig` and `--print-config` resolve all of it, and `tsc --showConfig` prints
+exactly the nine members `strict` expands to. Everything the diff reports as off is a
+candidate.
+
+If `code-quality-audit` has already run on this repo, its report answers Q21 and Q16
+with the per-project score and the missing list — start from that rather than
+re-deriving it, and re-measure the counts.
+
+Beyond the baselines:
+
+- typescript-eslint's `strict`/`stylistic` type-checked presets, and any compiler
+  option newer than the baseline's TS floor. **Read the files before assuming**;
+  `strict` alone implies a long list of flags.
 - Read the PR bodies of previous rounds (`gh pr list --state merged --search "Measured and deferred"`)
   — deferred checks are listed there with violation counts and skip reasons.
   Re-measure; counts drift and earlier sweeps sometimes make a check free.
@@ -98,13 +119,22 @@ For TS compiler options, pass the flag directly and count:
 npx tsc --noEmit -p <tsconfig> --<flag> 2>&1 | grep -cE 'error TS'
 ```
 
-**First check whether the flag is already set**: `grep -n '"<flag>"' <tsconfig>`, and
-remember that `"strict": true` turns on a whole family of them. A flag that is already
-on reports 0 errors because it is already on, and that zero says nothing about the flag
-— it is the compiler-option version of a check that cannot fail. Enabling on the
-strength of it adds a duplicate key that reads as new coverage while changing nothing
-(JSON takes the last one, so it is silent rather than an error). Candidates are only
-the flags the project does NOT already set.
+**First check whether the flag is already set** — and do it with
+`npx tsc --showConfig -p <tsconfig>`, not by grepping the file. A grep misses the two
+ways a flag arrives without appearing: `extends` (a base config, or a package like
+`expo/tsconfig.base` that a grep cannot even see) and `strict`, which turns on a whole
+family of nine. A flag that is already on reports 0 errors because it is already on,
+and that zero says nothing about the flag — it is the compiler-option version of a
+check that cannot fail. Enabling on the strength of it adds a duplicate key that reads
+as new coverage while changing nothing (JSON takes the last one, so it is silent rather
+than an error). Candidates are only the flags `--showConfig` reports as off.
+
+One exception to trust `--showConfig` on: it does not print an option whose default
+already matches the checked value, so an absent `forceConsistentCasingInFileNames` means
+on (default since TS 5.0), not off.
+
+Measure **per project**. A monorepo's root config says nothing about a package that does
+not extend it, and the same flag can be free in one project and expensive in another.
 
 ### 2. Prove the check can fail (the canary step)
 

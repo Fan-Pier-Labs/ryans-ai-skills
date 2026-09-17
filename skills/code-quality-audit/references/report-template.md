@@ -1,6 +1,6 @@
 # Code review report template
 
-Use this shape. Every one of the twenty questions gets a row in the scorecard and a section,
+Use this shape. Every one of the twenty-one questions gets a row in the scorecard and a section,
 even when the answer is "Yes, verified" in one line — a reader checking the review against the
 checklist should never wonder whether a question was skipped. Lead with the worst thing. Write
 for someone who knows the domain but didn't watch you work: what it is, why it matters, what to
@@ -53,6 +53,7 @@ time.>
 | 18 | Force-push blocked on every branch (default branch is the floor) | | **High** | <default only / not protected at all / enforce_admins false> |
 | 19 | Clock faked, no fixed sleeps in tests | | Medium | <31 fixed sleeps = 48 s/run; no fake-timer tooling> |
 | 20 | No change-detector tests | | Medium | <4 snapshots over 1k lines; 6 files change in lockstep with their source> |
+| 21 | Baseline TypeScript compiler checks enabled | <n>% / N/A | High below ~70% | <lowest project 14/23; no noUncheckedIndexedAccess anywhere> |
 
 **Answer counts:** <n> Yes · <n> Partial · <n> No · <n> Unknown · <n> N/A
 
@@ -265,6 +266,30 @@ protect it instead. Note the ones you judged legitimate (a small reviewed snapsh
 call at a real boundary) so the reader can see the line you drew. Close with the question for the
 team: when you last refactored, how much of the diff was tests?>
 
+## Q21. Baseline TypeScript compiler checks — <n>/23 in the lowest project (<n>%)
+
+<N/A in one line for a repo with no `tsconfig.json`, saying whether that is because there is no
+TypeScript (Q1/Q9 cover the equivalent) or because there IS TypeScript and nothing is checking
+it — which is a Q9 finding, not a 0%.>
+
+**Measured with:** `tsc --showConfig -p <each tsconfig>` · **Projects scored:** <n> ·
+**Headline is the lowest, not the average.**
+
+| tsconfig | Files it checks | A strict (9) | B correctness (7) | C dead code (6) | D hygiene (1) | Total |
+|---|---|---|---|---|---|---|
+| | <n of the repo's <n> .ts files> | | | | | <n>/23 |
+
+<Then: the missing checks ranked by what ships without them, not by error count — the table in
+§Q21 of the checklist is the ranking. `strict` off anywhere is the first line and outranks
+everything else. Name any `extends` that could not be resolved and whose options are therefore
+uncounted. Say how much of the repo each project actually covers: a config at 23/23 whose
+`include` never reaches `tests/` or `scripts/` is 100% of a fraction, and that gap outranks the
+percentage. Count `@ts-nocheck` / `@ts-expect-error` files, which suspend every check above.
+Cross-reference Q1 and Q10 for whether `tsc --noEmit` is wired to a script and required by branch
+protection. Close with the wave plan: the measured error count per missing flag
+(`npx tsc --noEmit -p <tsconfig> --<flag> 2>&1 | grep -cE 'error TS'`), which ones are zero and
+can be committed as a ratchet today, and which one to fix first.>
+
 ---
 
 ## Recommended sequence
@@ -272,9 +297,10 @@ team: when you last refactored, how much of the diff was tests?>
 **Today (minutes to hours, no risk):** <add the `~ALL` no-force-push ruleset, or at minimum block
 force-push and deletion on the default branch, and set enforce_admins; add the auth guard to the 4 open routes; rotate the committed key; turn the CI
 workflow on for pull_request and mark it required; set the coverage threshold one point below
-today's measured number; commit the <n> zero-violation baseline lint rules as ratchets>
-**This week (a day or two):** <one integration test that boots the app; strict types in the api
-package; replace the <n> fixed sleeps with polls and fake the clock in the expiry tests; delete the
+today's measured number; commit the <n> zero-violation baseline lint rules and the <n>
+zero-error baseline compiler flags as ratchets>
+**This week (a day or two):** <one integration test that boots the app; `strict` on in the api
+package, then `noUncheckedIndexedAccess` as its own PR; replace the <n> fixed sleeps with polls and fake the clock in the expiry tests; delete the
 dead exports knip found>
 **Then (decisions, not fixes):** <split the two 1500-line modules; consolidate the duplicated
 invoice logic; retire the v1 endpoints after 30 days of 410>
