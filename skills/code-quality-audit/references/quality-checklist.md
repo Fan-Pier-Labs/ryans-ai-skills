@@ -99,8 +99,10 @@ scripts/dead-code.py --repo <repo> --out <scratch>     # add --entry <roots> if 
 ```
 
 It resolves the import graph — relative paths, tsconfig `paths`, bundler module roots
-(`from 'src/components/X'`), workspace package names, `export *` barrels, `from x import *` —
-walks it from every entry point it can find, and reports:
+(`from 'src/components/X'`), workspace package names, inline `type` imports, `export *` barrels,
+`from x import *` — walks it from every entry point it can find (including `<script src>` in an
+HTML page, the paths quoted in a bundler config, `package.json` `main`/`bin`/`scripts`,
+console_scripts, shebangs, and framework-routed paths), and reports:
 
 | Finding | What it means |
 |---|---|
@@ -109,7 +111,7 @@ walks it from every entry point it can find, and reports:
 | **Reached only from tests** (medium) | The product never uses it; its test is keeping it alive. Delete both, in one commit |
 | **Unreferenced definition** (high for a `_private` name, else medium) | The name appears in no other file, in any form — identifier, attribute, or string |
 | **Exported but never imported** | Not dead, but the `export` / public name is. Narrowing it is what lets the next run see more |
-| **Excluded, with the reason** | What the pass declined to call dead: a decorator, `__all__`, a name in a template or a config string, a module loaded by name, a star-import, a framework-conventional path |
+| **Excluded, with the reason** | What the pass declined to call dead: a decorator, `__all__`, a name in a template or a config string, a module loaded by name, a star-import, a framework-conventional path, or a **filename** named somewhere that is not importing it — a deploy script naming its payload, a README documenting `bun scripts/thing.ts` as a command to run |
 
 Two things to read before quoting any of its numbers:
 

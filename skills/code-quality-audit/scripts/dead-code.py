@@ -73,7 +73,8 @@ JS_CONVENTION_RE = re.compile(
     r"(^|/)app/(page|layout|route|template|loading|error|not-found)\.[jt]sx?$|"
     r"(^|/)routes/|(^|/)api/|\+(page|layout|server|error)[.@]|"
     r"\.stories\.[jt]sx?$|\.d\.ts$|(^|/)functions/|(^|/)netlify/|(^|/)supabase/functions/|"
-    r"(^|/)pipes/|(^|/)workers?/|(^|/)cypress/|(^|/)e2e/")
+    r"(^|/)pipes/|(^|/)workers?/|(^|/)cypress/|(^|/)e2e/|"
+    r"(^|/)(lambdas?|serverless|cloud-?functions?|edge-functions?)/")
 # A standalone script is run by hand or by CI (`bun dev-scripts/x.ts`), so nothing imports it.
 CONFIG_LIKE_RE = re.compile(r"\.config\.[mc]?[jt]sx?$|rc\.[mc]?[jt]s$|\.setup\.[jt]sx?$|"
                             r"(^|/)[\w.-]*scripts?/|(^|/)(bin|tools?|dev|devtools|cli|examples?|demos?)/")
@@ -101,6 +102,22 @@ COMMON_NAMES = {"main", "run", "get", "set", "add", "new", "init", "setup", "ind
 
 def norm(p):
     return p.replace(os.sep, "/")
+
+
+def local_uses(text, name, sep="$"):
+    r"""How many times this file mentions `name` as a value, not as someone's property.
+
+    A plain `(?<![\w.])` lookbehind gets spread syntax wrong: in `{...EMPTY_PLAN}` the character
+    before the name is a dot, so the only use of a constant inside its own module vanishes and a
+    live value is reported as referenced nowhere. A member access is ONE dot; three is a spread."""
+    rx = re.compile(r"(?<![\w" + re.escape(sep) + r"])" + re.escape(name) + r"(?![\w" + re.escape(sep) + r"])")
+    n = 0
+    for m in rx.finditer(text):
+        i = m.start()
+        if i and text[i - 1] == "." and not text[max(0, i - 3):i] == "...":
+            continue          # a property access on something else
+        n += 1
+    return n
 
 
 # --- Python ----------------------------------------------------------------------------------
@@ -208,7 +225,7 @@ def js_exports(text):
             if not part:
                 continue
             local, _, exported = part.partition(" as ")
-            nm = (exported or local).strip()
+            nm = re.sub(r"^(?:type|typeof)\s+", "", (exported or local).strip())
             if re.fullmatch(r"[A-Za-z_$][\w$]*", nm) and nm != "default":
                 names.append((nm, text.count("\n", 0, m.start()) + 1))
     return names
@@ -309,7 +326,7 @@ def build(root, files, include_tests):
                 unresolved_bare.add(spec)
         for m in JS_NAMED_IMPORT_RE.finditer(t):
             for part in m.group(1).split(","):
-                nm = part.strip().split(" as ")[0].strip()
+                nm = re.sub(r"^(?:type|typeof)\s+", "", part.strip()).split(" as ")[0].strip()
                 if nm:
                     named_imports.setdefault(nm, set()).add(f)
         for m in JS_NAMESPACE_IMPORT_RE.finditer(t):
@@ -427,6 +444,25 @@ def entry_points(root, files, ctx, include_tests, extra=()):
         if re.search(r"(^|/)src/(index|main|app|entry|bootstrap|preamble)\.[jt]sx?$", f):
             mark(f, "conventional application root (src/index|main|app)")
 
+    # An HTML page is a root: `<script type="module" src="./main.tsx">` is how every Vite app,
+    # and every Electron renderer, boots. Nothing in the repo imports that file, so without this
+    # the entire UI tree reads as one large dead cluster.
+    for html in [f for f in files if f.endswith((".html", ".htm"))]:
+        d = os.path.dirname(html)
+        for ref in re.findall(r"<(?:script|link)[^>]*?(?:src|href)\s*=\s*['\"]([^'\"]+)['\"]",
+                              ctx["text"].get(html, ""), re.I):
+            if ref.startswith(("http://", "https://", "//", "data:", "#")):
+                continue
+            cand = norm(os.path.normpath(os.path.join(d, ref.lstrip("/"))))
+            for t in [cand] + [cand + e for e in JS_EXT]:
+                mark(t, f"loaded by <script>/<link> in {html}")
+            if ref.startswith("/"):        # a root-absolute src, resolved against each package dir
+                for base in {os.path.dirname(pj) for pj in files if os.path.basename(pj) == "package.json"}:
+                    for sub in ("", "src", "public"):
+                        c2 = norm(os.path.normpath(os.path.join(base, sub, ref.lstrip("/"))))
+                        for t in [c2] + [c2 + e for e in JS_EXT]:
+                            mark(t, f"loaded by <script>/<link> in {html}")
+
     # pyproject / setup.cfg console_scripts: "pkg.module:function"
     for cfg in [f for f in files if os.path.basename(f) in ("pyproject.toml", "setup.cfg", "setup.py")]:
         for mod in re.findall(r"=\s*[\"']?([\w.]+):[\w.]+", ctx["text"][cfg]):
@@ -502,6 +538,35 @@ def analyse(root, args):
         if f.endswith(JS_EXT) or f.endswith(TEXTUAL_EXT) or f.endswith((".py", ".pyi")):
             quoted.update(QUOTED_RE.findall(ctx["text"][f]))
     quoted |= {n for n in string_uses if "." in n}   # the whole-string literals py_uses kept
+    # Files pulled in by FILENAME rather than by import. The identifier index cannot see these,
+    # because `care-team.js` and `probe-mount-discovery.ts` are not identifiers, and they are as
+    # often unquoted as quoted:
+    #   inlineScript('care-team.js')                       a quoted asset path
+    #   "./plugins/withModularHeaders"                     a plugin listed in a config
+    #   zip -j "$ZIP" handler.mjs google-auth.mjs          a deploy script naming its payload
+    #   `bun probes/probe-mount-discovery.ts`              a command a README tells you to run
+    # The last two are why this indexes path-shaped tokens anywhere in a file, not only inside
+    # quotes: a script documented as a command IS an entry point, and its README says so.
+    PATHISH_RE = re.compile(r"[\w@][\w@./-]*\.[A-Za-z0-9]{1,5}\b")
+    QUOTED_ANY_RE = re.compile(r"['\"`]([^'\"`\n]{2,120})['\"`]")
+    filename_mentions = {}
+    for f in files:
+        if not (f.endswith(JS_EXT) or f.endswith(TEXTUAL_EXT) or f.endswith((".py", ".pyi"))):
+            continue
+        t = ctx["text"][f]
+        segs = set()
+        for q in PATHISH_RE.findall(t):
+            seg = q.rstrip("/").split("/")[-1]
+            segs.add(seg)
+            segs.add(seg.rsplit(".", 1)[0])
+        for q in QUOTED_ANY_RE.findall(t):        # a quoted path with no extension
+            seg = q.rstrip("/").split("/")[-1]
+            if seg and "." not in seg:
+                segs.add(seg)
+        for seg in segs:
+            if seg and not seg.startswith("."):
+                filename_mentions.setdefault(seg, set()).add(f)
+
     dynamic_modules = {}
     for f in ctx["src"]:
         if not f.endswith((".py", ".pyi")):
@@ -514,6 +579,21 @@ def analyse(root, args):
             if dotted in quoted:
                 dynamic_modules[f] = dotted
                 break
+
+    def referenced_by_filename(f, importers):
+        """Is this file named, as a filename, by something that is not already importing it?
+
+        The importers are subtracted because their mention IS the import specifier — counting it
+        would make every file evidence for itself, and would hide exactly the finding that matters
+        most here: a module whose only mention anywhere is its own test importing it."""
+        b = os.path.basename(f)
+        for cand in (b, b.rsplit(".", 1)[0]):
+            if len(cand) < args.min_name_len or cand.lower() in COMMON_NAMES:
+                continue
+            where = sorted(filename_mentions.get(cand, set()) - {f} - set(importers))
+            if where:
+                return cand, where[0]
+        return None
 
     def named_elsewhere(f):
         """Is this file, or something it defines, named as a string anywhere outside it? A module
@@ -557,8 +637,18 @@ def analyse(root, args):
         importers = sorted(g for g, s in ctx["imports"].items() if f in s)
         rec = {"file": f, "lines": ctx["text"][f].count("\n") + 1, "imported_by": importers[:5]}
         hit = named_elsewhere(f)
+        fname_hit = referenced_by_filename(f, importers)
         live_importers = [g for g in importers if g not in dead_set]
-        if f in test_reach:
+        # The exclusions come first: evidence that something loads this file by name settles the
+        # question regardless of what the import graph shows. A deploy script naming its payload
+        # and a README documenting a command to run are both that evidence.
+        if hit:
+            excluded.append({"file": f, "line": 1, "name": hit[0], "kind": "file", "language": "",
+                             "reason": f"unimported, but `{hit[0]}` is named in {hit[1]} — loaded by name, not by import"})
+        elif fname_hit:
+            excluded.append({"file": f, "line": 1, "name": fname_hit[0], "kind": "file", "language": "",
+                             "reason": f"unimported, but the filename `{fname_hit[0]}` is named in {fname_hit[1]} — run or loaded by name, not imported"})
+        elif f in test_reach:
             unreachable.append({**rec, "confidence": "medium",
                                 "verdict": "reached only from tests — the product does not use it"})
         elif importers and not live_importers:
@@ -566,9 +656,6 @@ def analyse(root, args):
             # without the others just moves the finding, so they are named as one cluster.
             unreachable.append({**rec, "confidence": "high",
                                 "verdict": f"only imported by other unreachable files ({len(importers)}) — a dead cluster"})
-        elif hit:
-            excluded.append({"file": f, "line": 1, "name": hit[0], "kind": "file", "language": "",
-                             "reason": f"unimported, but `{hit[0]}` is named in {hit[1]} — loaded by name, not by import"})
         else:
             unreachable.append({**rec, "confidence": "high", "verdict": "no importer anywhere"})
     unreachable.sort(key=lambda x: (x["confidence"] != "high", -x["lines"]))
@@ -612,7 +699,7 @@ def analyse(root, args):
                         continue
                     excluded.append({**rec, "reason": f"name appears in {sorted(users)[0]}"})
                     continue
-                local = len(re.findall(r"(?<![\w.])" + re.escape(n) + r"(?![\w])", t))
+                local = local_uses(t, n, sep=".")
                 if local <= 1:
                     unreferenced.append({**rec, "confidence": "high" if s["private"] else "medium",
                                          "note": "private to its module and never used in it" if s["private"]
@@ -649,7 +736,7 @@ def analyse(root, args):
                         exported_not_imported.append({**rec, "local_uses": len(users),
                                                       "note": f"the identifier appears in {sorted(users)[0]} but is never imported by name — check for a same-named local"})
                     continue
-                local = len(re.findall(r"(?<![\w$.])" + re.escape(n) + r"(?![\w$])", t))
+                local = local_uses(t, n)
                 if local <= 1:
                     unreferenced.append({**rec, "confidence": "medium",
                                          "note": "exported, and the name appears in no other file"})
