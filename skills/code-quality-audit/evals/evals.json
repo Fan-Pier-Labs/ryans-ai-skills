@@ -1,0 +1,29 @@
+{
+  "skill_name": "code-quality-audit",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We just inherited this codebase from a contractor and I'm the new tech lead. Can you review the code quality and tell me what I'm dealing with? It's a Next.js frontend and a FastAPI backend in the same repo.",
+      "expected_output": "Establishes scope (branch, sha, both packages, monorepo handled per package) and gets counts from git ls-files before judging anything. Answers all fifteen questions with Yes/No/Partial/Unknown, each with the command that produced the evidence. Actually runs the installed tools read-only (eslint, tsc --noEmit, ruff, mypy, knip/vulture, jscpd, madge) and says which were not installed rather than guessing. Runs the unit suite and reports whether it passes. For Q3 enumerates both the Next.js route handlers and the FastAPI routes, follows include_router mounts, classifies each route's auth status, and checks authorization (ownership-scoped queries) separately from authentication. Delivers a scorecard report file plus a chat summary leading with the worst finding. Changes no code, runs nothing with --fix, and offers follow-ups rather than assuming them.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "is there any dead code or duplicate code in this repo? and do we actually have tests that do anything",
+      "expected_output": "Treats this as Q2, Q5, Q6 and Q7 rather than the full fifteen, and says so. For dead code: runs knip/ts-prune/vulture/deadcode if installed, and explicitly rules out framework-invoked code (route decorators, DI, entry points in package.json#bin and pyproject scripts, templates, dynamic imports, other repos) before calling anything dead; presents findings as candidates with the check that would confirm each. For duplication: runs jscpd or a normalised-line frequency pass on non-vendored code only, and judges each group \u2014 reporting which groups it decided were NOT worth extracting and why. For tests: counts test files and assertions, runs the suite, reports pass/fail, counts skipped tests, and judges whether the tests assert behaviour or just their own mocks; separates unit from integration and names the one integration test that should exist if there are none. Does not report a duplication percentage that includes node_modules or generated files.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Security-wise I mostly care about one thing: are all our API endpoints actually locked down? We use Express with a requireAuth middleware.",
+      "expected_output": "Scopes to Q3 (and Q4 as a by-product) and says the rest of the checklist is not covered. Enumerates every route including sub-routers, reads files top-to-bottom rather than trusting grep, and accounts for middleware order, mount-point auth (app.use('/api/x', requireAuth, router) protecting routes in another file), global middleware with a public allowlist (checking the allowlist's prefix matches adversarially), and any second server or Lambda. Classifies each route inline/router/global/expected-public/none-seen with file:line evidence. Then checks authorization separately: every handler that fetches by id must scope the query by the caller, and mass-assignment and role checks on admin routes are examined; IDORs are reported as findings even though those routes are authenticated. Also reports CSRF, webhook signature verification, JWT algorithm pinning, rate limiting on login, and CORS credentials. Recommends inverting to deny-by-default with an explicit allowlist rather than adding guards one at a time, and does not modify any code.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "We have eslint set up already with the recommended configs. Are we missing anything important? And what percent of your recommended rules do we have on?",
+      "expected_output": "Answers Q16. Resolves the repo's EFFECTIVE config with `npx eslint --print-config <a real .ts file>` rather than reading the config file's text, because most rules arrive through presets like tseslint.configs.recommended. Extracts the 105 enabled rule names from references/eslint-baseline.config.mjs, diffs them, and reports a percentage split by error versus warn. Presents the missing rules grouped by what they catch (floating/misused promises, silent wrong behaviour, error handling, injection/legacy APIs, module graph, React correctness, type honesty) rather than as a flat alphabetical list, and leads with the group whose absence hides real bugs \u2014 typically the promise group. Checks whether type-aware rules can actually resolve types (parserOptions.projectService or project, plus installed dependencies) and says the percentage is nominal if they cannot, since those rules load and match nothing without type information. Cross-references Q1 and Q10: says whether lint is wired to CI and required by branch protection, because coverage means nothing otherwise. Treats a rule whose options were narrowed (for example prefer-nullish-coalescing with ignorePrimitives) as a configuration difference to explain, not as missing. Recommends the wave adoption method from the baseline file's header \u2014 measure each candidate rule alone, commit the zero-violation ones immediately as canary-verified ratchets, then one PR per rule with real violations, smallest count first \u2014 and explicitly warns against one PR that enables all 105. Changes no config.",
+      "files": []
+    }
+  ]
+}
