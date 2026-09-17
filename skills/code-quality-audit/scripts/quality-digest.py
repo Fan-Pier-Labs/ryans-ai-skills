@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan a repo for the mechanical evidence behind the twenty code-quality questions and write
+"""Scan a repo for the mechanical evidence behind the twenty-one code-quality questions and write
 <out>/inventory.json plus <out>/DIGEST.md.
 
   scripts/quality-digest.py <repo> <out>
@@ -681,6 +681,179 @@ def render_eslint_baseline(inv, ctx):
     return md
 
 
+# The 23 checks in references/tsconfig-baseline.json, grouped as that file groups them, each
+# mapped to the value that means "on". Group A is what `strict: true` expands to — see
+# `tsc --showConfig`, which prints exactly these nine.
+TS_BASELINE = {
+    "A strict family": {k: True for k in (
+        "alwaysStrict", "noImplicitAny", "noImplicitThis", "strictBindCallApply",
+        "strictBuiltinIteratorReturn", "strictFunctionTypes", "strictNullChecks",
+        "strictPropertyInitialization", "useUnknownInCatchVariables")},
+    "B correctness": {k: True for k in (
+        "noUncheckedIndexedAccess", "exactOptionalPropertyTypes", "noImplicitReturns",
+        "noFallthroughCasesInSwitch", "noImplicitOverride",
+        "noPropertyAccessFromIndexSignature", "noUncheckedSideEffectImports")},
+    "C dead code + modules": {
+        "noUnusedLocals": True, "noUnusedParameters": True,
+        "allowUnreachableCode": False, "allowUnusedLabels": False,
+        "verbatimModuleSyntax": True, "isolatedModules": True},
+    "D hygiene": {"forceConsistentCasingInFileNames": True},
+}
+# Checks tsc applies unless the config explicitly turns them OFF. `--showConfig` does not print
+# these when they are unset, so absence means "on" for them and "off" for everything else.
+TS_DEFAULT_ON = {"forceConsistentCasingInFileNames"}
+
+
+def strip_jsonc(t):
+    """Comments out of a tsconfig, without eating the `/*` inside `"@/*": [...]` — which is why
+    a regex is not enough here: every `paths` entry in a repo that uses aliases contains one."""
+    out, i, n = [], 0, len(t)
+    while i < n:
+        c = t[i]
+        if c == '"':
+            j = i + 1
+            while j < n and t[j] != '"':
+                j += 2 if t[j] == "\\" else 1
+            out.append(t[i:j + 1]); i = j + 1
+        elif t.startswith("//", i):
+            i = t.find("\n", i)
+            if i < 0: break
+        elif t.startswith("/*", i):
+            j = t.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            out.append(c); i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))      # and trailing commas
+
+
+def scan_ts_checks(ctx):
+    """Q21: which of the baseline compiler checks each tsconfig has on.
+
+    A TEXT parse — `tsc --showConfig` is the authoritative one and the checklist says to run it.
+    This follows `extends` to other files in the repo so a base config is not missed, reports any
+    `extends` it could not resolve (a package like `expo/tsconfig.base` lives in node_modules,
+    which is not in the file list), and expands `strict` into its nine members the way the
+    compiler does.
+    """
+    T, glob_re = ctx.T, ctx.glob_re
+    files = ctx.files
+    want = {k: v for g in TS_BASELINE.values() for k, v in g.items()}
+
+    def parse(f):
+        try:
+            return json.loads(strip_jsonc(T(f)))
+        except Exception:
+            return None
+
+    def resolve(f, seen):
+        """compilerOptions for `f` with its `extends` chain merged under it (nearest wins)."""
+        if f in seen or len(seen) > 6:
+            return {}, []
+        seen.add(f)
+        d = parse(f)
+        if d is None:
+            return {}, [f"{f}: could not be parsed as JSONC"]
+        opts, notes = {}, []
+        ext = d.get("extends")
+        for e in ([ext] if isinstance(ext, str) else list(ext or [])):
+            if not e.startswith("."):
+                notes.append(f"`extends` \"{e}\" is a package — not resolved here, its options are NOT counted below")
+                continue
+            tgt = os.path.normpath(os.path.join(os.path.dirname(f), e))
+            cand = [x for x in files if x == tgt or x == tgt + ".json"]
+            if not cand:
+                notes.append(f"`extends` \"{e}\" did not resolve to a file in the repo")
+                continue
+            base_opts, base_notes = resolve(cand[0], seen)
+            opts.update(base_opts); notes += base_notes
+        own = d.get("compilerOptions") or {}
+        opts.update(own)
+        if opts.get("strict") is True:                            # as the compiler expands it
+            for k in TS_BASELINE["A strict family"]:
+                opts.setdefault(k, True)
+        elif opts.get("strict") is False:
+            for k in TS_BASELINE["A strict family"]:
+                opts.setdefault(k, False)
+        return opts, notes
+
+    projects = []
+    for f in sorted(glob_re(r"(^|/)tsconfig(\.\w+)?\.json$"))[:12]:
+        opts, notes = resolve(f, set())
+        if not opts and notes:
+            projects.append({"file": f, "unreadable": True, "notes": notes})
+            continue
+        def is_on(k, want):
+            return opts.get(k, want if k in TS_DEFAULT_ON else None) == want
+        groups = {g: {"on": [k for k in c if is_on(k, c[k])],
+                      "missing": [k for k in c if not is_on(k, c[k])]} for g, c in TS_BASELINE.items()}
+        on = sum(len(v["on"]) for v in groups.values())
+        projects.append({
+            "file": f, "on": on, "total": len(want), "percent": 100 * on // len(want),
+            "groups": groups, "notes": notes,
+            "strict": opts.get("strict"),
+            "skip_lib_check": opts.get("skipLibCheck"),
+            "include": (parse(f) or {}).get("include"),
+            "extends": (parse(f) or {}).get("extends"),
+        })
+    scored = [p for p in projects if not p.get("unreadable")]
+    return {"ts_checks": {
+        "projects": projects,
+        "baseline_total": len(want),
+        "lowest": min([p["percent"] for p in scored], default=None),
+    }}
+
+
+def render_ts_checks(inv, ctx):
+    """Q21. Baseline TypeScript compiler-check coverage (recommended: 100%)"""
+    md = []
+    lang_files, primary = ctx.lang_files, ctx.primary
+    tc = inv["ts_checks"]
+    if not tc["projects"]:
+        md.append("N/A — no `tsconfig.json` in this repo." + (
+            " There IS TypeScript here, which makes the missing config a **Q1 and Q9 finding**, not a 0%."
+            if "typescript" in lang_files else
+            " No TypeScript either; Q1 and Q9 cover " + ", ".join(primary) + "."))
+        return md
+    md.append(f"Scored against `references/tsconfig-baseline.json` ({tc['baseline_total']} checks). "
+              "**Text parse** — it follows `extends` to files in the repo but not into `node_modules`, "
+              "so run `npx --no-install tsc --showConfig -p <tsconfig>` and the §Q21 snippet before "
+              "quoting any number.")
+    md.append("")
+    md.append("| tsconfig | Score | A strict (9) | B correctness (7) | C dead code (6) | D hygiene (1) |")
+    md.append("|---|---|---|---|---|---|")
+    for p in tc["projects"]:
+        if p.get("unreadable"):
+            md.append(f"| `{p['file']}` | **unparsed** | | | | |")
+            continue
+        g = p["groups"]
+        cell = lambda n: f"{len(g[n]['on'])}/{len(g[n]['on']) + len(g[n]['missing'])}"
+        md.append(f"| `{p['file']}` | **{p['on']}/{p['total']} = {p['percent']}%** | "
+                  f"{cell('A strict family')} | {cell('B correctness')} | "
+                  f"{cell('C dead code + modules')} | {cell('D hygiene')} |")
+    md.append("")
+    if tc["lowest"] is not None and len(tc["projects"]) > 1:
+        md.append(f"- Headline is the **lowest** project, not the average: {tc['lowest']}%. "
+                  "A package that does not extend the root inherits nothing from it.")
+    for p in tc["projects"]:
+        if p.get("unreadable"):
+            md.append(f"- `{p['file']}`: " + "; ".join(p["notes"]))
+            continue
+        missing = [k for g in p["groups"].values() for k in g["missing"]]
+        if missing:
+            md.append(f"- `{p['file']}` missing: " + ", ".join(f"`{m}`" for m in missing))
+        if p["strict"] is not True:
+            md.append(f"  - **`strict` is {'not set' if p['strict'] is None else json.dumps(p['strict'])}** — "
+                      "the nine Group A checks above are counted "
+                      "individually, and everything else here is secondary to turning it on.")
+        for n in p["notes"]:
+            md.append(f"  - {n}")
+    md.append("- Coverage of the checks is not coverage of the repo: compare "
+              "`npx --no-install tsc -p <tsconfig> --listFiles | grep -vc node_modules` against "
+              "`git ls-files '*.ts' '*.tsx' | wc -l` before quoting a score, and cross-reference Q1/Q10 "
+              "for whether `tsc --noEmit` is wired to a script and required by branch protection.")
+    return md
+
+
 def scan_coverage(ctx, prior):
     T, base, exists, glob_re, L = ctx.T, ctx.base, ctx.exists, ctx.glob_re, ctx.L
     root, files, src, test_files, prod_src = ctx.root, ctx.files, ctx.src, ctx.test_files, ctx.prod_src
@@ -1034,6 +1207,7 @@ SECTIONS = [
     ("Q18. Force-push blocked on every branch; deletion blocked where history must survive (recommended: yes)", render_history_protection),
     ("Q19. Tests do not wait on real-world time; the clock is faked (recommended: yes)", render_real_time),
     ("Q20. No change-detector tests (recommended: none)", render_change_detectors),
+    ("Q21. Baseline TypeScript compiler-check coverage (recommended: 100%)", render_ts_checks),
     ("Analyzer outputs present", render_analyzers),
 ]
 
@@ -1047,6 +1221,7 @@ def main():
     inv = {"repo": root, "date": str(datetime.date.today()), "files": len(ctx.files)}
     inv.update(scan_stack(ctx))
     inv.update(scan_tooling(ctx))
+    inv.update(scan_ts_checks(ctx))
     inv.update(scan_tests(ctx))
     inv.update(scan_ci(ctx))
     inv.update(scan_coverage(ctx, inv))
@@ -1063,7 +1238,7 @@ def main():
         json.dump(inv, fh, indent=1, default=str)
 
     md = [f"# Code quality inventory — `{root}` — {inv['date']}", "",
-          "Mechanical evidence for the twenty questions in `references/quality-checklist.md`. "
+          "Mechanical evidence for the twenty-one questions in `references/quality-checklist.md`. "
           "Every line here is a pointer: open the file before you cite it. "
           "Suggested answers are mechanical and can be wrong in both directions.", ""]
     for title, renderer in SECTIONS:

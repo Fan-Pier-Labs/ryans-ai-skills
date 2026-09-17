@@ -1,13 +1,13 @@
 ---
 name: code-quality-audit
-description: Review a whole repository's code quality against twenty concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, and are there change-detector tests — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, or which eslint rules they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
+description: Review a whole repository's code quality against twenty-one concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, what percent of a baseline set of TypeScript compiler checks is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, and are there change-detector tests — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, whether strict mode or stricter TypeScript compiler options are on (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride and the rest), test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, or which eslint rules or tsconfig options they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
 ---
 
 # Repo Code Review
 
 The question is not "is this diff good" (that is `auto-reviewer`, which reviews one PR at a
 time). It is: **is this codebase one a team can keep working in, and what would a careful
-senior engineer flag on day one?** Twenty questions, each with a recommended answer. The
+senior engineer flag on day one?** Twenty-one questions, each with a recommended answer. The
 report is a scorecard with evidence a founder can hand to a new engineering lead, or a buyer
 can use in technical due diligence.
 
@@ -33,16 +33,25 @@ can use in technical due diligence.
 | 18 | Is the default branch protected from **force-push and deletion**? | Yes |
 | 19 | Do tests **wait on real-world time**, or is the clock faked? | Faked — no fixed sleeps |
 | 20 | Are there **change-detector tests** (fail on any change, prove nothing)? | No |
+| 21 | What percent of the **baseline TypeScript compiler checks** are enabled? (TS) | 100% |
 
 `references/quality-checklist.md` has, for each question: how to detect it in each language
 (with the exact commands), why it matters, what good looks like, and the fix. Questions 3 and 4
 have the most detection detail because they are the ones a model gets wrong most often.
 
-Q16 is measured against `references/eslint-baseline.config.mjs`, a vendored 105-rule flat config
-from a production TypeScript monorepo. Nearly every rule in it catches code that compiles, runs,
-and does something other than what it reads as. Q16 is N/A for repos with no TypeScript or
-JavaScript; Q1 covers those, and the checklist names the nearest equivalent rule families for
-Python, Go, Rust and Ruby.
+Two questions are scored against a vendored baseline rather than judged. **Q16** uses
+`references/eslint-baseline.config.mjs`, a 105-rule flat config from a production TypeScript
+monorepo; nearly every rule in it catches code that compiles, runs, and does something other than
+what it reads as. **Q21** uses `references/tsconfig-baseline.json`, 23 compiler checks set by 15
+options, the union of what two production TypeScript repos have landed one check at a time.
+
+They are separate questions because tsc and ESLint catch different halves, and a repo is
+routinely high on one and low on the other: the compiler sees every file it is pointed at with no
+config for a rule to be missing from, but only knows type-level facts; the type-aware lint rules
+see intent. Both are N/A for repos with no TypeScript — Q1 and Q9 cover those, and the checklist
+names the nearest equivalents for Python, Go, Rust, Ruby and C#. Q16 additionally applies to
+JavaScript-only repos; Q21 does not, because a JS repo has no compiler checking anything, which
+is a Q9 finding rather than a 0%.
 
 **Read-only by default, always.** Inventory, read, judge, recommend. This skill's entire write
 surface is one report file, plus a PR comment or issue if the user asks for one. Never fix code,
@@ -120,7 +129,7 @@ anything and never passes `--fix`). Read `DIGEST.md` first. Every line in it is 
 not a verdict: open the file before you cite it. The output directory must be outside the
 repo or gitignored.
 
-### 3. Answer the twenty questions
+### 3. Answer the twenty-one questions
 
 Work through `references/quality-checklist.md` in order. For each question write:
 
@@ -133,7 +142,10 @@ Rules that keep this honest:
 
 - **Prefer a tool's output to your reading.** Run what is installed (`eslint`, `tsc --noEmit`,
   `mypy`, `ruff check`, `go vet`, `cargo clippy`, `knip`, `vulture`, `jscpd`, `madge
-  --circular`, `npm audit`). Read-only invocations only: never `--fix`, `--write`, or
+  --circular`, `npm audit`). For Q16 and Q21 the tool output IS the answer, and the config file
+  is not: `eslint --print-config <a real .ts file>` and `tsc --showConfig -p <each tsconfig>`
+  resolve the presets and the `extends` chain that make a config's text an unreliable read.
+  Read-only invocations only: never `--fix`, `--write`, or
   `--unsafe-fixes`. If a tool is not installed, say "not installed, not run" rather than
   guessing what it would say — or run it once from a throwaway location (`npx --yes`, `uvx`)
   if the user is fine with that, and label the result as an ad-hoc run.
@@ -188,7 +200,7 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
 
 ### 6. Write the report
 
-Use `references/report-template.md`: summary → scorecard (all twenty rows, always) → one
+Use `references/report-template.md`: summary → scorecard (all twenty-one rows, always) → one
 section per question → the top findings ranked by severity → a recommended sequence → method
 and caveats. Lead with the worst thing. A "Yes, verified" is one line; do not pad it. A "No"
 without a fix, or a fix without the command, is not finished.
@@ -223,6 +235,10 @@ that change and nothing else. Never batch fixes across questions.
 | Thought | Reality |
 |---|---|
 | "It's TypeScript, so Q9 is a Yes." | Check `strict` in every `tsconfig*.json`, then count `any` and `@ts-ignore` in non-test code. `strict: false` plus 300 `any`s is a Partial at best. |
+| "`strict: true`, so Q21 is a Yes." | `strict` is nine of the twenty-three. The fourteen it leaves off — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitReturns`, `noImplicitOverride` and the rest — are where the runtime crashes are. Score them. |
+| "I read the tsconfig, so I know what's on." | You don't: `extends` pulls options in from a base config or a package, and `strict` expands into nine more, neither visible in the file. Only `tsc --showConfig` resolves both. Never score Q21 off the JSON text. |
+| "The root tsconfig is at 23/23." | Score every `tsconfig*.json` separately and headline the *lowest*. A package that does not extend the root inherits nothing from it. |
+| "Q21 is 100%, so the compiler is checking the repo." | Only the files in `include`. A config at 23/23 that never sees `tests/` or `scripts/` is 100% of a fraction — compare `tsc --listFiles` against `git ls-files '*.ts'` before quoting the number. |
 | "There's an `.eslintrc`, so Q1 is a Yes." | Is it wired to a script, a pre-commit hook, or a CI job? A config nobody runs is not enforced. Run it and count the violations. |
 | "There's a `tests/` directory, so Q6 is a Yes." | Count assertions, not files, and run it. Four smoke tests over a 40k-line app is a No. Tests that mock the thing under test are decoration. |
 | "The tests pass, so the code is covered." | Coverage is a separate claim. Report it only if you measured it, and name what is uncovered that matters (auth, money, migrations). |
@@ -266,12 +282,17 @@ tools are installed — so the next review is a re-run, not a rediscovery.
 - `scripts/dup-blocks.py` — normalised-window duplicate detector with no dependencies; Q5.
 - `scripts/quality-digest.py` — the config/test/CI/secret/type/size/error scans and the
   `DIGEST.md` writer. Pure read.
-- `references/quality-checklist.md` — the twenty questions: what to look at, why each matters,
+- `references/quality-checklist.md` — the twenty-one questions: what to look at, why each matters,
   what good looks like, and the fix. Deliberately kept above per-language tooling detail: it
   carries the false positives, thresholds and judgment calls, not an ecosystem tutorial. Read
   during step 3.
 - `references/eslint-baseline.config.mjs` — the 105-rule baseline Q16 measures against, with the
   reasoning kept on every rule and the wave-adoption method in its header. Read for Q16, and
   hand it to the user as the thing to copy into their repo.
+- `references/tsconfig-baseline.json` — the 23 compiler checks (15 options) Q21 measures against:
+  the union of what two production TypeScript repos have landed, with the WHY on every option, the
+  options deliberately left out and the reason for each, and the same wave-adoption method in its
+  header. Read for Q21, and hand it to the user as the thing to copy into their repo. It is a
+  valid tsconfig as written — `tsc --showConfig -p` on it prints the 23.
 - `references/report-template.md` — the scorecard report skeleton and the per-question
   contract. Read during step 6.

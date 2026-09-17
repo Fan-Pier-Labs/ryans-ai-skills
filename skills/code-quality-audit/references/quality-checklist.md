@@ -1,4 +1,4 @@
-# Code quality checklist — the twenty questions, how to answer each, and what "good" looks like
+# Code quality checklist — the twenty-one questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -24,7 +24,8 @@ Contents: Q1 Lint + type checker · Q2 Dead code · Q3 Endpoint auth · Q4 Dead 
 Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types · Q10 CI gates ·
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
 Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
-Q18 Force-push blocked on every branch · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests
+Q18 Force-push blocked on every branch · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests ·
+Q21 Baseline TypeScript compiler-check coverage
 
 ---
 
@@ -422,6 +423,9 @@ The questions behind the numbers:
 
 - Is `strict` true (or mypy `disallow_untyped_defs` / pyright `strict`), and in **every**
   package of the monorepo? One `"strict": false` in a leaf config is where the bugs live.
+  `strict` is the floor, not the ceiling: **Q21** scores the fourteen further compiler checks it
+  does not include. Answer this question on whether the type system is on and honest, and leave
+  the per-flag scoring to Q21 so the two do not restate each other.
 - Is the checker run in CI (Q10) or only in the editor?
 - Are the **boundaries** typed: request/response bodies, database rows, external API
   responses, environment variables? Types matter most where data enters the process, and that
@@ -662,6 +666,9 @@ Q1 asks whether a linter exists and is enforced. This question asks whether it i
 catch anything. A repo can pass Q1 with `eslint:recommended` and still miss every rule in
 `eslint-baseline.config.mjs` — 105 rules, almost all of which catch code that compiles, runs,
 and does something other than what it reads as.
+
+tsc and ESLint catch different halves, so this question and **Q21** (the compiler's own checks)
+are scored separately and a repo is routinely high on one and low on the other.
 
 **TypeScript / JavaScript only.** For other languages this is N/A and Q1 carries the weight;
 note the nearest equivalent and whether it is on: ruff's `F`, `B`, `BLE`, `SIM`, `RET`, `ASYNC`
@@ -1088,3 +1095,129 @@ actually matter rather than deleting the test. Replace call verification with an
 the outcome the call produces. Where a test protects nothing but the current shape of the code,
 delete it — an empty slot is more honest than a test that must be edited to make any change, and
 coverage lost this way is coverage that was never real.
+
+---
+
+## Q21. What percent of the baseline TypeScript compiler checks are enabled? (recommended: 100%)
+
+Q9 asks whether the type system is on and honest. Q16 asks what the linter is configured to
+catch. This asks the third, separate question: **of the checks the compiler already ships, how
+many is this repo actually running?** A repo can pass Q9 with `"strict": true` — nine checks —
+and be leaving fourteen more on the table, every one of them free to turn on and none of them
+visible in any tool's output until you do.
+
+The baseline is `references/tsconfig-baseline.json`: **23 checks set by 15 options**, the union
+of what two production TypeScript repos have landed one check at a time. Its header carries the
+reasoning for each option and the list of options deliberately left out.
+
+**TypeScript only.** N/A for a repo with no `tsconfig.json`; Q9 carries the weight, and the
+nearest equivalents are mypy's `--strict` (and `disallow_any_explicit`, `warn_unreachable`,
+`warn_return_any`, `warn_unused_ignores` beyond it) for Python, `go vet` plus
+`golangci-lint`'s `nilness`/`exhaustive` for Go, `#![deny(warnings)]` plus clippy's `pedantic`
+for Rust, and `<Nullable>enable</Nullable>` with `TreatWarningsAsErrors` for C#. A repo with
+JavaScript only is a Q9 finding (no compiler is checking anything), not a 0% here.
+
+### Measuring it
+
+Never read the percentage off the tsconfig text. `extends` pulls options in from a base config
+or a package (`expo/tsconfig.base`, `@tsconfig/node22`), `strict` expands into nine more, and
+neither is visible in the file. `--showConfig` resolves both, which is the whole reason to use
+it:
+
+```bash
+cd <repo>
+npx --no-install tsc --showConfig -p tsconfig.json > /tmp/effective.json
+```
+
+Run it **once per tsconfig** — `git ls-files '*tsconfig*.json'` — and score each project
+separately. A monorepo's root config says nothing about a package that does not extend it, and
+the honest headline is the *lowest* project's score, not the average.
+
+```bash
+python3 - <<'PY'
+import json, re, subprocess, sys
+CHECKS = {  # the 23 in references/tsconfig-baseline.json, with the value that means "on"
+ "A strict family": {k: True for k in (
+   "alwaysStrict","noImplicitAny","noImplicitThis","strictBindCallApply",
+   "strictBuiltinIteratorReturn","strictFunctionTypes","strictNullChecks",
+   "strictPropertyInitialization","useUnknownInCatchVariables")},
+ "B correctness": {k: True for k in (
+   "noUncheckedIndexedAccess","exactOptionalPropertyTypes","noImplicitReturns",
+   "noFallthroughCasesInSwitch","noImplicitOverride",
+   "noPropertyAccessFromIndexSignature","noUncheckedSideEffectImports")},
+ "C dead code + modules": {"noUnusedLocals": True, "noUnusedParameters": True,
+   "allowUnreachableCode": False, "allowUnusedLabels": False,
+   "verbatimModuleSyntax": True, "isolatedModules": True},
+ "D hygiene": {"forceConsistentCasingInFileNames": True},
+}
+DEFAULT_ON = {"forceConsistentCasingInFileNames"}   # tsc applies these unless turned OFF, and
+                                                   # --showConfig does not print them when unset
+eff = json.load(open(sys.argv[1] if len(sys.argv) > 1 else "/tmp/effective.json"))["compilerOptions"]
+on = off = 0
+for group, checks in CHECKS.items():
+    miss = [k for k, want in checks.items()
+            if eff.get(k, want if k in DEFAULT_ON else None) != want]
+    on += len(checks) - len(miss); off += len(miss)
+    print(f"{group}: {len(checks)-len(miss)}/{len(checks)}" + (f"  missing: {', '.join(miss)}" if miss else ""))
+print(f"TOTAL {on}/{on+off} = {100*on//(on+off)}%")
+PY
+```
+
+`--showConfig` expands `strict` into exactly the nine Group A members and resolves `extends`
+through packages, which is why it is the authoritative reading. It does **not** print an option
+whose default is already the checked value — `forceConsistentCasingInFileNames` has defaulted to
+true since TS 5.0, so its absence means on and only an explicit `false` is a finding. The snippet
+above handles that one; if you hand-read the output, do the same.
+
+Two further things `--showConfig` will not tell you, and both change the answer:
+
+- **A check only covers the files the project includes.** A config at 23/23 whose `include` is
+  `src/**` and whose `tests/` and `scripts/` are checked by nothing scores 100% over a fraction
+  of the repo. Get the real denominator before quoting the number:
+  `npx --no-install tsc -p <tsconfig> --listFiles | grep -v node_modules | wc -l`, against
+  `git ls-files '*.ts' '*.tsx' | wc -l`. Report both, and treat a large gap as the finding —
+  it outranks the percentage.
+- **A check nobody runs is 0%.** Cross-reference Q1 and Q10: is `tsc --noEmit` wired to a script
+  and required by branch protection, or does it only run in someone's editor? "21/23 enabled,
+  but the typecheck job is advisory" is the honest sentence.
+
+Do not count an option as covered because something similar is set. `noImplicitAny` alone is not
+`strict`. A `@ts-expect-error` or an `// @ts-nocheck` at the top of a file suspends every check
+in it — count those (Q9 already does) and say how much of the repo they exempt, because a 23/23
+config over 40 `@ts-nocheck` files is not what the number implies.
+
+### What good looks like
+
+23/23 in every project, `include` covering every `.ts` file in the repo, `tsc --noEmit` in CI and
+required by branch protection, and no `@ts-nocheck`. Below that, what matters is which checks are
+missing, not the percentage: a repo without `noUncheckedIndexedAccess` has a class of runtime
+crash it cannot see, while a repo without `noPropertyAccessFromIndexSignature` has a style gap.
+
+Rank the missing ones by what they catch, not by how many errors they would produce:
+
+| Missing check | What ships without it |
+|---|---|
+| `strict` (or any of its nine) | Everything below is moot; `null` and `undefined` are unchecked |
+| `noUncheckedIndexedAccess` | `arr[i]` and `map[key]` are assumed present — the empty-array crash |
+| `exactOptionalPropertyTypes` | An explicit `undefined` reaches a payload where the key should be absent |
+| `noImplicitReturns` | A branch that falls off the end returns `undefined` against its annotation |
+| `noFallthroughCasesInSwitch` | The missing `break` |
+| `noImplicitOverride` | A renamed base method leaves subclass methods that are never called again |
+| `verbatimModuleSyntax` / `isolatedModules` | Type-only imports survive into the bundle, or load-bearing ones are dropped |
+| `noUnusedLocals` / `noUnusedParameters` | Q2's dead code, at the level the compiler could have caught for free |
+| `allowUnreachableCode` / `allowUnusedLabels` left at default | Unreachable code is a greyed-out editor hint the build ignores |
+
+### The fix
+
+Copy `tsconfig-baseline.json` into the repo and adopt it in waves, as its header describes:
+measure each missing flag alone from the command line
+(`npx tsc --noEmit -p <tsconfig> --<flag> 2>&1 | grep -cE 'error TS'`), confirm the flag is not
+already set before trusting a zero, canary every zero, commit the zero-cost flags together as a
+ratchet, then fix the rest one flag per PR, smallest count first. Report the measured error count
+per missing flag if you have it — that count is what makes the plan credible, and it is usually
+much smaller than the team expects for everything except `noUncheckedIndexedAccess`.
+
+Where a flag's count is genuinely too large for one sitting, scope it (a second tsconfig over the
+directories that pass, or the flag on with an `exclude`) with a comment saying why and a tracking
+issue — never leave it off silently. `enable-more-lint-or-ts-checks` is this whole loop as a
+skill; hand it this file and the per-flag counts.
