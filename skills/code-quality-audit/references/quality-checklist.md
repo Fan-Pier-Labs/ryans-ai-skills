@@ -1,4 +1,4 @@
-# Code quality checklist — the twenty-two questions, how to answer each, and what "good" looks like
+# Code quality checklist — the twenty-three questions, how to answer each, and what "good" looks like
 
 Answer every question with **Yes / No / Partial / Unknown**, the evidence, and the recommended
 state. "Unknown, could not verify" is an honest answer and better than a guess; say what would
@@ -19,13 +19,16 @@ Reach for the tool you know for the stack in front of you.
 `coverage`, `.venv`, `venv`, `target`, `__pycache__`, `Pods`, migrations you did not write,
 `*.min.js`, `*-lock.json`, `*.pb.go`, `*_pb2.py`, `*.g.dart`, `*.generated.*`, snapshots.
 `git ls-files` already honours `.gitignore`; prefer it to `find`.
+The one exception is **Q23**, whose entire subject is which of those trees are tracked in git —
+answer it on the unfiltered `git ls-files` output, and say so when you do.
 
 Contents: Q1 Lint + type checker · Q2 Dead code · Q3 Endpoint auth · Q4 Dead endpoints ·
 Q5 Duplicate code · Q6 Unit tests · Q7 Integration tests · Q8 DAG · Q9 Types · Q10 CI gates ·
 Q11 Committed secrets · Q12 Lockfile + audit · Q13 Oversized files · Q14 Swallowed errors ·
 Q15 README · Q16 Baseline lint-rule coverage · Q17 Test coverage ≥ 80% ·
 Q18 Force-push blocked on every branch · Q19 Faked clock, no fixed sleeps · Q20 No change-detector tests ·
-Q21 Baseline TypeScript compiler-check coverage · Q22 Not re-implementing what a library solves
+Q21 Baseline TypeScript compiler-check coverage · Q22 Not re-implementing what a library solves ·
+Q23 No build output, dependency trees or caches committed
 
 ---
 
@@ -1398,3 +1401,129 @@ its own reviewed PR; replacing a deep-clone helper is a cleanup.
    delete the tree and add the dependency. Modified means the diff is the real decision — upstream
    it, or record it as an owned fork with the version it forked from and who watches upstream's
    advisories.
+
+---
+
+## Q23. Is build output, dependency trees, or cache and editor cruft committed to git? (recommended: no)
+
+Every ecosystem produces files derived from the source: `.pyc` and `__pycache__/`, `node_modules/`,
+`dist/`, `.o` / `.a` / `.so`, `target/`, `bin/` and `obj/`, `*.class`, `Pods/`, `_build/`,
+`.terraform/`. None of it belongs in version control, and the reason is not tidiness. Git keeps
+the full history of everything it has ever tracked in every clone forever; a derived file is a
+second source of truth that can silently disagree with the code it came from; and a binary file
+cannot be diffed, cannot be merged, and turns every review into a scroll.
+
+The usual cause is not a decision. It is `git add -A` before a `.gitignore` existed, and the
+ignore rule arriving afterwards — **`.gitignore` has no effect on a file git already tracks**, so
+the rule reads correctly, the file stays tracked, and nobody notices for two years. That is why
+the first command below finds the most.
+
+This is also the one question where the exclusion list at the top of this file works against you:
+every other count here deliberately drops `node_modules`, `dist`, `vendor` and friends so the
+numbers stay honest. Here you are looking *at* them, on the tracked tree.
+
+### Detecting it
+
+Tracked files only. Untracked build output in a working tree is not a finding — it is what
+`.gitignore` is for.
+
+```bash
+# 1. The sharpest one: files git tracks that the repo's own ignore rules say to ignore.
+#    Every hit is a file someone ignored later and never untracked.
+git ls-files -ci --exclude-standard
+git check-ignore -v <one of those paths>          # which rule should have caught it
+
+# 2. Artifact, dependency and cache directories, by name, across ecosystems.
+git ls-files | grep -nE '(^|/)(node_modules|bower_components|jspm_packages|vendor/bundle|\.bundle|Pods|Carthage|DerivedData|_build|deps|target|\.gradle|\.terraform|\.dart_tool|\.next|\.nuxt|\.svelte-kit|\.output|\.parcel-cache|\.turbo|storybook-static|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|htmlcov|coverage|CMakeFiles|\.libs|xcuserdata|site-packages)/'
+git ls-files | grep -nE '\.(pyc|pyo|class|jar|war|ear|o|obj|a|lib|so|so\.[0-9.]+|dylib|dll|exe|pdb|nupkg|gch|pch|ko|dex|apk|aab|ipa|egg|whl|tsbuildinfo|xcuserstate)$'
+git ls-files | grep -nE '(^|/)(dist|build|out|bin|obj)/'          # judge per language, do not assume
+git ls-files | grep -nE '(^|/)(\.DS_Store|Thumbs\.db|\.idea|\.vscode|[^/]*\.sw[po]|[^/]*~)($|/)'
+
+# 3. Names lie — a Go binary called `server` has no extension. Ask what the bytes are.
+git ls-files -z | xargs -0 file --mime-type 2>/dev/null \
+  | grep -vE ': (text/|image/|inode/x-empty|application/(json|xml|pdf))' | head -40
+git ls-files -z | xargs -0 ls -lS 2>/dev/null | head -20          # biggest tracked files today
+
+# 4. What every clone pays for — including files already deleted from HEAD.
+git count-objects -vH                                              # size-pack IS the download
+git rev-list --objects --all \
+  | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+  | awk '$1=="blob"' | sort -k3 -rn | head -20                     # biggest blobs ever committed
+```
+
+Put `size-pack` next to the size of the working source (`du -sh --exclude=.git .`). A repo with
+4 MB of code and a 900 MB pack has something large in its history, and command 4 names the file.
+
+### What each shape costs — rank findings this way, not by file count
+
+| Shape | Cost | Severity |
+|---|---|---|
+| **A secret inside a committed artifact** — a bundle with the key inlined at build time, `terraform.tfstate`, a `.env` copied into `dist/` | Credential disclosure that no `.env` scan catches, because the file is called `main.js` | 🔴 Critical — rotate, and file it with Q11 |
+| **The committed artifact is what deploys**, and CI does not rebuild it | Nobody can prove the running code matches the source. A source fix ships nothing until someone remembers to rebuild and commit; an edit made directly to `dist/` is invisible in review and survives every later build | 🟠 High — 🔴 for a published package or a browser bundle, which is a supply-chain path |
+| **Dependency trees**: `node_modules/`, `Pods/`, `vendor/bundle/`, `venv/`, `site-packages/` | Thousands of files in every clone and every diff; platform-specific compiled deps that break on a colleague's machine or in CI; upgrades become unreviewable | 🟠 High |
+| **Clone and CI weight** | Paid on every clone and every CI checkout, forever. Deleting the file from `HEAD` does not give the bytes back | 🟠 High when `size-pack` is genuinely painful, else 🟡 |
+| **Compiled binaries**: `.o`, `.a`, `.so`, `.class`, `.exe`, an extensionless ELF or Mach-O | Unmergeable, unreviewable, built for one platform, stale the moment the source changes — and the failure it causes on someone else's machine never points at the checked-in file | 🟡 Medium |
+| **Caches and OS/editor state**: `__pycache__/`, `.pytest_cache/`, `.DS_Store`, `.idea/workspace.xml`, `*.xcuserstate` | Conflicts on files nobody reads, and noise that trains reviewers to skim diffs | 🟡 Medium — but a tracked `.DS_Store` reliably means no `.gitignore` was ever set up, so check the rest harder |
+
+The through-line for the top two rows: a derived file in git is a second source of truth. The
+moment it disagrees with the code it came from — and it will, because regenerating it is a manual
+step someone eventually skips — the repo is lying about what it builds. That is the argument to
+put in the report; "it's untidy" is not.
+
+### Legitimate exceptions — work each one before writing a finding
+
+- **Build-tool wrappers.** `gradle/wrapper/gradle-wrapper.jar` and `.mvn/wrapper/maven-wrapper.jar`
+  are committed on purpose: they are how a fresh checkout gets a pinned build tool before it has
+  one. Not a finding.
+- **Lockfiles are not artifacts.** `package-lock.json`, `go.sum`, `Cargo.lock` are inputs, and
+  committing them is the recommendation — that is Q12.
+- **Deliberate vendoring.** Go's `vendor/` (`go mod vendor`, built with `-mod=vendor`) is a
+  supported hermetic-build workflow; PHP `vendor/` and CocoaPods `Pods/` are committed by some
+  teams on purpose. These are decisions, not accidents: look for the written reason, and check
+  that CI verifies the tree is in sync (regenerate, then `git diff --exit-code`). Score against
+  the policy — a vendored tree with no policy and no sync check is the finding. Overlaps Q22
+  shape 2 when the vendored code has been *modified*: there it is an unpatched fork, here it is
+  weight, and the same tree can be both.
+- **Generated code committed on purpose.** protobuf stubs, GraphQL/OpenAPI clients, `sqlc` output,
+  `*.g.dart`, the Prisma client, Rails `schema.rb`, migrations. A real trade: consumers do not
+  need the generator toolchain and the diff stays reviewable. The finding is drift, not the
+  commit — no generator config in the repo, no CI job proving it regenerates identically, or a
+  file whose source of truth has moved on. Test it: regenerate and `git diff --exit-code`.
+- **Binary content that is content.** Images, fonts, icons, PDFs, test fixtures, sample data, a
+  screen recording in `docs/`. Possibly worth Git LFS; not build output.
+- **Shared editor config.** A curated `.vscode/settings.json` or `extensions.json` is a team
+  convention. `.idea/workspace.xml`, `*.xcuserstate` and per-user log files never are. Judge the
+  file, not the directory.
+- **`dist/` in a package consumers install straight from a git URL.** Legacy but deliberate; the
+  fix is a publish step or a `prepare` script, not `git rm`.
+- **A built `docs/` site committed for GitHub Pages.** A known pattern; moving it to an action is
+  a suggestion, not a finding.
+
+And one question to ask before filing any of it: could the committed artifact be the **only** copy?
+A binary whose source is gone is a much worse finding than clutter, and `git rm` is not its fix.
+
+### What good looks like
+
+A language-appropriate `.gitignore` committed in the first commit (github/gitignore has one per
+ecosystem), `git ls-files -ci --exclude-standard` printing nothing, no tracked file over a
+megabyte that is not a deliberate asset, a pack size in proportion to the source, and a personal
+`core.excludesFile` so `.DS_Store` and editor directories never depend on each repo remembering
+them. Generated code is either not committed or committed with a CI job that regenerates it and
+fails on a diff.
+
+### The fix
+
+1. **Untrack, do not delete** — one commit per category, so the diff stays legible:
+   `git rm -r --cached node_modules` and `git rm --cached '*.pyc'`, then add the rules to
+   `.gitignore`. The working tree keeps the files; git stops tracking them. Verify with
+   `git ls-files -ci --exclude-standard` printing nothing.
+2. **Say plainly that this does not shrink the clone.** The blobs stay in history. Rewriting
+   (`git filter-repo --path node_modules --invert-paths`, or BFG) changes every SHA from the first
+   touched commit onward, invalidates every clone and fork, breaks open PRs, and needs a
+   coordinated re-clone. Worth it when `size-pack` is genuinely painful or a live secret is in
+   there; not otherwise. Say which case this repo is in rather than recommending it by reflex.
+3. **Prevent the next one.** A CI step that fails when `git ls-files -ci --exclude-standard` is
+   non-empty, and pre-commit's `check-added-large-files` for the artifacts no ignore rule
+   anticipated. Both are cheap and neither needs a new tool in the repo.
+4. **For generated code that stays**, add the regenerate-and-diff CI job. That converts the whole
+   question from a rule people forget into a check that cannot drift.
