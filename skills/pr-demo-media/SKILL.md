@@ -85,6 +85,47 @@ the sweep. The contract:
    nothing, say why in one line.
 5. Run **Demoing one PR** as written.
 
+## Dependency preflight — before the first checkout, not at capture time
+
+Every demo this skill produces comes out of Playwright. Without the library there is no video,
+and without a browser binary there is no screenshot either — and the place that fails today is
+step 4, after a clone, a dependency install, an app launch and a capture script. That is the
+whole cost of the PR paid for nothing.
+
+So check **once, at the start of the sweep** (or once before a single-PR run), before the first
+`gh repo clone`:
+
+```bash
+npx --no-install playwright --version 2>/dev/null || echo "playwright: not installed"
+ls "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}" 2>/dev/null | grep -q chromium || echo "chromium: not downloaded"
+```
+
+The library is installed **into each throwaway clone** (`bun add -d playwright`), which is not
+the user's tree and needs no permission. The **browser binary** does: it is a ~150 MB download
+into a machine-level cache that outlives every clone. That is the one thing to ask about:
+
+```
+Demos need Chromium for Playwright, which isn't on this machine yet:
+
+  bunx playwright install chromium     (~150 MB, into ~/Library/Caches/ms-playwright,
+                                        shared by every future demo — downloaded once)
+
+Download it and demo the 3 PRs? (yes / no)
+```
+
+- **Yes** → download it once, up front, then run the sweep. Not once per PR.
+- **No** → **stop. Demo nothing.** Say which PRs went undemoed and that they stay eligible —
+  the marker is per head SHA, so nothing was consumed and the next run picks them all up. Never
+  fall back to a screenshot of an error page, an ASCII description of the UI, or a comment
+  saying what the feature would look like. A demo that is not a recording of the running app is
+  not a demo.
+
+**Dispatched by `/pr-watcher` with nobody watching**, there is no one to answer: do the same
+check, and if Chromium is missing, post nothing, mark nothing, and report the missing
+dependency as the reason the queue did not drain. A background agent that cannot produce its
+artifact stops and says so — it does not post a placeholder. `../shared/dependency-preflight.md`
+is the full contract.
+
 ## Demoing one PR
 
 ### 1. Understand the change
@@ -154,9 +195,11 @@ before capturing.
 Video recording requires `recordVideo` on a browser context, which only the
 library exposes — this is the sanctioned exception to the playwright-cli rule.
 Write the script inside the checkout so `import 'playwright'` resolves
-(`bun add -d playwright` or `npm i -D playwright` if absent, plus
-`bunx playwright install chromium` if Chromium is missing). Headless is
-deliberate: recording needs no window, and headless can't steal focus.
+(`bun add -d playwright` or `npm i -D playwright` if absent — the checkout is a
+throwaway, so this needs no asking). Chromium was settled at the preflight; if
+it is missing here, the preflight was skipped, and the answer is to stop and ask
+rather than to download 150 MB mid-capture. Headless is deliberate: recording
+needs no window, and headless can't steal focus.
 
 ```ts
 import { chromium } from 'playwright';

@@ -47,6 +47,48 @@ cat CLAUDE.md 2>/dev/null | grep -iA5 'verify'; jq -r '.scripts' package.json
    ESLint is set up.
 4. **The default branch**, from `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`.
 
+## Then: the dependency preflight — ask once, before the first probe
+
+This skill works inside the user's own checkout, so every install it makes is a diff in their
+tree. Two kinds, and the difference decides what you ask:
+
+**The repo's own dependencies are not a question.** `npm ci` is step one of the process — without
+`node_modules`, type-aware lint degrades every import to `any`, the rules match nothing, and
+every measurement in step 1 is a quiet zero. Run it, don't ask about it, and if it fails, stop:
+the numbers are worthless until it succeeds.
+
+**A new plugin or tool is a question**, because it lands in `package.json` and the lockfile:
+
+```bash
+npx --no-install eslint --version; npx --no-install tsc --version   # is the toolchain even here
+```
+
+- ESLint or TypeScript **missing entirely** → this round is adding it, which is the whole PR and
+  is what the user asked for. Say so, name the packages, and go.
+- A **plugin** you want for a specific rule (`eslint-plugin-import`, `-security`, `-promise`) →
+  it earns its install only for a concrete invariant, and the user approves it by name before you
+  add it — one ask listing every plugin the round needs, with the rules each one buys and the
+  install command, not a plugin bolted on mid-round because a candidate looked interesting.
+
+```
+This round needs 1 plugin that isn't installed:
+
+  eslint-plugin-promise  → floating-promise and async-in-loop rules (4 candidates)
+    npm i -D eslint-plugin-promise   (adds a devDependency + lockfile entry, in the PR)
+
+Add it and start the probe? (yes / no)
+```
+
+- **Yes** → install, and the install is part of the PR that enables the rules it serves —
+  never a commit of its own, and never left in the tree if the round is abandoned.
+- **No** → **drop every candidate that needed it and say which**, then continue with the rest.
+  This skill is the one case where a no is not a full stop: the rules from installed plugins are
+  still worth landing. What a no forbids is quietly enabling a rule that then does nothing
+  because its plugin isn't there — a config that references a missing plugin fails the whole lint
+  run, and a round that lands that has made things worse.
+
+`../shared/dependency-preflight.md` is the full contract.
+
 ## Where to find candidates
 
 **Start from the two vendored baselines**, which are the candidate list already
@@ -79,7 +121,8 @@ Beyond the baselines:
   Re-measure; counts drift and earlier sweeps sometimes make a check free.
 - Look at what recent bugs would have been caught by — a check that would have
   prevented a real regression outranks any preset.
-- Plugins earn their install only for a concrete invariant worth locking in
+- Plugins earn their install only for a concrete invariant worth locking in, and
+  only with the user's yes from the preflight above
   (e.g. module-cycle detection after a de-cycling refactor).
 
 ## Ground rules (learned the hard way)

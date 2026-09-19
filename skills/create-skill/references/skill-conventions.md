@@ -85,6 +85,15 @@ infra-audit both do this).
   loop. A shared script takes **arguments**, not a set of env vars the
   caller exports — a flag the call site spells out beats a knob defined
   elsewhere. Read `skills/shared/README.md` before adding a script.
+- **A skill that needs a tool asks for it up front, or does not run.** If the
+  skill cannot do its job without a third-party package — an analyzer, a
+  scanner, Playwright, a toolchain — it detects what is missing *before* step
+  one, asks once with the whole list and the exact install command, and then
+  either installs and runs or stops. Never start and discover it halfway
+  through; never degrade to a grep, an estimate, or a column of Unknowns.
+  `skills/shared/dependency-preflight.md` is the contract — read it and state
+  the gate inline in the SKILL.md. CLIs and credentials (`gh`, `aws`, an SSH
+  key) are *access*, not packages: those belong in the skill's own scope step.
 - **No skill runs its own timer.** A PR-reactive skill is one sweep that
   exits, plus a "Single-PR invocation" contract; continuous coverage comes
   from `/pr-watcher run /<name>`, which is webhook-driven and falls back to
