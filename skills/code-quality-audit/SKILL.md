@@ -1,13 +1,13 @@
 ---
 name: code-quality-audit
-description: Review a whole repository's code quality against twenty-two concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, what percent of a baseline set of TypeScript compiler checks is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, are there change-detector tests, and is the codebase re-implementing something a well-maintained library already solves — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, whether strict mode or stricter TypeScript compiler options are on (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride and the rest), test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, hand-rolled code for a solved problem ("are we reinventing the wheel", "should this be a library", homegrown crypto, date math, CSV parsing, retry logic), or which eslint rules or tsconfig options they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
+description: Review a whole repository's code quality against twenty-three concrete questions — is a linter and type checker enabled and enforced, is there dead code, do endpoints require authentication and authorization, are there dead endpoints, is there duplicate code, are there unit tests, are there integration tests, is the module graph a DAG, are types set up, does CI exist and gate every PR on lint, tests, integration tests and coverage, are secrets committed, is the lockfile committed and audited, are files oversized, are errors swallowed, does the README explain setup/run/test, what percent of a baseline ESLint rule set is enabled, what percent of a baseline set of TypeScript compiler checks is enabled, is test coverage at least 80% with the threshold enforced, is the default branch protected from force-push and deletion, do tests wait on real-world time instead of a faked clock, are there change-detector tests, is the codebase re-implementing something a well-maintained library already solves, and is build output, a dependency tree or a cache committed to git — and deliver a scorecard report with evidence and exact fixes. Use whenever the user asks to review the code quality of a repo or codebase, asks "is this codebase any good", "what tech debt do we have", "audit our code", "is this maintainable", "what would a senior engineer flag", "grade this repo"; asks about dead code, duplicate code, circular imports, missing tests, missing types, whether strict mode or stricter TypeScript compiler options are on (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride and the rest), test coverage or a coverage percentage, whether CI runs their tests and linter, branch protection or force-push protection, slow or flaky tests, tests that sleep or wait on real time, brittle or snapshot-heavy tests, unauthenticated endpoints, hand-rolled code for a solved problem ("are we reinventing the wheel", "should this be a library", homegrown crypto, date math, CSV parsing, retry logic), build artifacts committed to the repo ("are there .pyc files in git", "is node_modules checked in", "why is our repo so big", "is our clone slow", committed `dist/`, `.o`/`.a`/`.class` files, a missing or ignored-too-late `.gitignore`), or which eslint rules or tsconfig options they should have on; or wants a due-diligence read on a codebase they are inheriting, acquiring, or taking over. For reviewing one pull request's diff, use auto-reviewer instead.
 ---
 
 # Repo Code Review
 
 The question is not "is this diff good" (that is `auto-reviewer`, which reviews one PR at a
 time). It is: **is this codebase one a team can keep working in, and what would a careful
-senior engineer flag on day one?** Twenty-two questions, each with a recommended answer. The
+senior engineer flag on day one?** Twenty-three questions, each with a recommended answer. The
 report is a scorecard with evidence a founder can hand to a new engineering lead, or a buyer
 can use in technical due diligence.
 
@@ -35,12 +35,15 @@ can use in technical due diligence.
 | 20 | Are there **change-detector tests** (fail on any change, prove nothing)? | No |
 | 21 | What percent of the **baseline TypeScript compiler checks** are enabled? (TS) | 100% |
 | 22 | Is the codebase **re-implementing what a library solves** (or depending on one for something trivial)? | No |
+| 23 | Is **build output, a dependency tree or a cache committed** to git (`.pyc`, `node_modules/`, `dist/`, `.o`/`.a`, `target/`)? | No |
 
 `references/quality-checklist.md` has, for each question: how to detect it in each language
 (with the exact commands), why it matters, what good looks like, and the fix. Questions 3 and 4
 have the most detection detail because they are the ones a model gets wrong most often; Q22
 carries the longest false-positive list, because it is the one where a confident wrong answer
-costs the team a migration.
+costs the team a migration. Q23 is the only question answered on the *unfiltered* file list —
+every other count in this review drops `node_modules`, `dist` and `vendor` so its numbers mean
+something, and Q23's whole subject is which of those trees git is tracking.
 
 Two questions are scored against a vendored baseline rather than judged. **Q16** uses
 `references/eslint-baseline.config.mjs`, a 105-rule flat config from a production TypeScript
@@ -129,13 +132,14 @@ scripts/repo-inventory.sh --repo <repo> --out <scratch dir>     # read-only; --n
 It writes `DIGEST.md` plus the JSON behind it: the import graph and its cycles (Q8), every
 HTTP endpoint with its visible auth status and whether anything references it (Q3/Q4),
 duplicate blocks (Q5), hand-rolled implementations paired against the dependency list (Q22),
-test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
+tracked build output, dependency trees and caches with the tracked-but-ignored set called out
+separately (Q23), test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
 the output of whichever analyzers are already installed (`run-analyzers.sh` never installs
 anything and never passes `--fix`). Read `DIGEST.md` first. Every line in it is a pointer,
 not a verdict: open the file before you cite it. The output directory must be outside the
 repo or gitignored.
 
-### 3. Answer the twenty-two questions
+### 3. Answer the twenty-three questions
 
 Work through `references/quality-checklist.md` in order. For each question write:
 
@@ -213,7 +217,7 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
 
 ### 6. Write the report
 
-Use `references/report-template.md`: summary → scorecard (all twenty-two rows, always) → one
+Use `references/report-template.md`: summary → scorecard (all twenty-three rows, always) → one
 section per question → the top findings ranked by severity → a recommended sequence → method
 and caveats. Lead with the worst thing. A "Yes, verified" is one line; do not pad it. A "No"
 without a fix, or a fix without the command, is not finished.
@@ -222,9 +226,9 @@ Severity, applied consistently:
 
 | Severity | Meaning |
 |---|---|
-| 🔴 Critical | Live exposure or data loss: an unauthenticated endpoint that reads or writes user data, a committed live credential, hand-rolled crypto / password hashing / JWT verification / HTML sanitization on a live path, no backups of anything the code is the only copy of. |
-| 🟠 High | The team will hit this soon and it will hurt: no tests around money or auth, no CI gate, an unprotected default branch anyone can force-push, types disabled, a circular core that makes every change risky. |
-| 🟡 Medium | Real maintenance cost: duplication, dead code, oversized files, swallowed errors, missing lint rules. |
+| 🔴 Critical | Live exposure or data loss: an unauthenticated endpoint that reads or writes user data, a committed live credential — including one baked into a committed build artifact or `.tfstate` — hand-rolled crypto / password hashing / JWT verification / HTML sanitization on a live path, no backups of anything the code is the only copy of. |
+| 🟠 High | The team will hit this soon and it will hurt: no tests around money or auth, no CI gate, an unprotected default branch anyone can force-push, types disabled, a circular core that makes every change risky, a committed artifact that deploys without CI rebuilding it. |
+| 🟡 Medium | Real maintenance cost: duplication, dead code, oversized files, swallowed errors, missing lint rules, committed caches and compiled objects. |
 | 🟢 Low / Good | Nits, and things that are genuinely fine. Say what is good, but only what is earned. |
 
 ## Gating: what may run
@@ -248,7 +252,7 @@ that change and nothing else. Never batch fixes across questions.
 | Thought | Reality |
 |---|---|
 | "It's TypeScript, so Q9 is a Yes." | Check `strict` in every `tsconfig*.json`, then count `any` and `@ts-ignore` in non-test code. `strict: false` plus 300 `any`s is a Partial at best. |
-| "`strict: true`, so Q21 is a Yes." | `strict` is nine of the twenty-three. The fourteen it leaves off — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitReturns`, `noImplicitOverride` and the rest — are where the runtime crashes are. Score them. |
+| "`strict: true`, so Q21 is a Yes." | `strict` is nine of the twenty-three baseline checks. The fourteen it leaves off — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitReturns`, `noImplicitOverride` and the rest — are where the runtime crashes are. Score them. |
 | "I read the tsconfig, so I know what's on." | You don't: `extends` pulls options in from a base config or a package, and `strict` expands into nine more, neither visible in the file. Only `tsc --showConfig` resolves both. Never score Q21 off the JSON text. |
 | "The root tsconfig is at 23/23." | Score every `tsconfig*.json` separately and headline the *lowest*. A package that does not extend the root inherits nothing from it. |
 | "Q21 is 100%, so the compiler is checking the repo." | Only the files in `include`. A config at 23/23 that never sees `tests/` or `scripts/` is 100% of a fraction — compare `tsc --listFiles` against `git ls-files '*.ts'` before quoting the number. |
@@ -281,6 +285,12 @@ that change and nothing else. Never batch fixes across questions.
 | "Hand-rolled crypto is a Q22 cleanup." | It is a 🔴 security finding that happens to be filed under Q22. Same for JWT verification, OAuth flows and HTML sanitization — those go in "Today", not in the refactor list, and never in a batched cleanup PR. |
 | "Their eslint config is long, so Q16 is high." | Length is not coverage. Resolve the effective config with `eslint --print-config` and diff rule names against the baseline — most rules arrive through presets, and a long config can still miss the whole promise group. |
 | "The type-aware rules are in their config, so they're on." | Half the baseline needs `projectService`/`project` and installed dependencies. Without them the rules load, match nothing, and look enabled. Check, and report the percentage as nominal if they aren't resolving types. |
+| "`node_modules` is in `.gitignore`, so Q23 is a Yes." | `.gitignore` does nothing to a file git already tracks. That is how almost every one of these lands: `git add -A` first, ignore rule later. `git ls-files -ci --exclude-standard` is the command that finds them, and it is the first thing to run. |
+| "`ls` shows no build output, so nothing is committed." | You looked at the working tree. Q23 is about the tracked tree and its history — a 400 MB `node_modules` deleted two years ago is still in every clone. Read `git count-objects -vH` and the biggest blobs across `--all`. |
+| "`git rm -r --cached dist` fixes it." | It fixes the future. The bytes stay in history and every clone still downloads them. Only a history rewrite removes them, and that invalidates every clone, fork and open PR — recommend it when `size-pack` is genuinely painful or a live secret is in there, and say so explicitly either way. |
+| "They committed the built `dist/`, that's just untidy." | Ask what deploys. If the artifact ships and CI does not rebuild it, nobody can prove the running code matches the source, and an edit made straight to `dist/` survives every review — that is 🟠 High, not a nit. Check it for baked-in keys too; a secret in `main.js` is invisible to every `.env` scan. |
+| "`vendor/` is committed, so that's a finding." | Not on its own. Go's `vendor/` is a supported hermetic-build workflow, and PHP and CocoaPods teams commit theirs deliberately. The finding is a vendored tree with no written reason and no CI check that it is in sync — and if it has been *modified*, it is a Q22 unpatched fork as well. |
+| "There are generated protobuf stubs in git." | Committing generated code is a real trade: consumers skip the generator toolchain. The finding is drift — no generator config, no CI job regenerating it and failing on a diff, or a source of truth that has moved on. Regenerate and `git diff --exit-code` before writing anything. |
 
 ## Output
 
@@ -304,7 +314,7 @@ tools are installed — so the next review is a re-run, not a rediscovery.
 - `scripts/quality-digest.py` — the config/test/CI/secret/type/size/error scans, the eighteen
   hand-rolled-implementation signals paired against the dependency manifest (Q22), and the
   `DIGEST.md` writer. Pure read.
-- `references/quality-checklist.md` — the twenty-two questions: what to look at, why each matters,
+- `references/quality-checklist.md` — the twenty-three questions: what to look at, why each matters,
   what good looks like, and the fix. Deliberately kept above per-language tooling detail: it
   carries the false positives, thresholds and judgment calls, not an ecosystem tutorial. Read
   during step 3.

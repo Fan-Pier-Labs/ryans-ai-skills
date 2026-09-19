@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Scan a repo for the mechanical evidence behind the twenty-two code-quality questions and write
+"""Scan a repo for the mechanical evidence behind the twenty-three code-quality questions and write
 <out>/inventory.json plus <out>/DIGEST.md.
 
   scripts/quality-digest.py <repo> <out>
 
 Reads the JSON written by import-graph.py, find-endpoints.py and dup-blocks.py from <out> when
 present, plus branch-protection.json / rulesets.json if repo-inventory.sh could read them, and
-lists any tool-*.txt written by run-analyzers.sh. Pure read of local files; nothing is executed.
+lists any tool-*.txt written by run-analyzers.sh. Pure read: local files plus read-only `git`
+queries (log, ls-files, cat-file); nothing in the repo is built, installed or modified.
 Secret matches are printed redacted (first 4 chars only).
 
 Shape: one `scan_*(ctx) -> dict` and one `render_*(inv, ctx) -> list[str]` per question, defined
@@ -111,6 +112,15 @@ class Ctx:
 
 
 def yesno(b): return "yes" if b else "NO"
+
+
+def git_out(root, *args, timeout=60):
+    """stdout of a read-only git command, or "" if it fails."""
+    try:
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def scan_stack(ctx):
@@ -1491,6 +1501,157 @@ def render_reinvention(inv, ctx):
               "trade than the hand-rolled code.")
     return md
 
+# --- Q23 -----------------------------------------------------------------------------------
+# Every other question runs on `_repo_files.list_files`, which drops node_modules, dist, vendor,
+# caches and anything gitignored so the counts mean something. This one is about exactly those
+# trees, so it goes back to the raw tracked list: `git ls-files --cached`, nothing filtered.
+
+# (category, regex) — matched against tracked paths. "Certain" is derived output or a dependency
+# tree in every ecosystem that produces it; nothing here has a legitimate reason to be tracked.
+ARTIFACT_CERTAIN = [
+    ("dependency tree", r"(^|/)(node_modules|bower_components|jspm_packages|site-packages|vendor/bundle|\.bundle/|Pods|Carthage|DerivedData)/"),
+    ("python bytecode / cache", r"(^|/)__pycache__/|\.py[co]$|(^|/)\.(pytest|mypy|ruff)_cache/|(^|/)\.tox/|\.egg-info/"),
+    ("virtualenv", r"(^|/)(\.venv|venv|virtualenv)/(bin|lib|lib64|Scripts|Lib|include)/"),
+    ("js/ts build output", r"(^|/)(dist|\.next|\.nuxt|\.svelte-kit|\.output|storybook-static)/|\.tsbuildinfo$"),
+    ("js/ts cache", r"(^|/)(\.turbo|\.parcel-cache|\.yarn/(cache|unplugged)|\.sass-cache|\.serverless)/"),
+    ("compiled object / library / binary", r"\.(o|obj|a|lo|la|so|dylib|dll|exe|pdb|gch|pch|ko|nupkg|dex|apk|aab|ipa|egg|whl)$|\.so\.[0-9]"),
+    ("jvm class output", r"\.class$|(^|/)(\.gradle)/"),
+    ("native build dir", r"(^|/)(CMakeFiles|\.libs|cmake-build-[^/]+)/|(^|/)CMakeCache\.txt$"),
+    ("coverage output", r"(^|/)(coverage|htmlcov|\.nyc_output)/|(^|/)(\.coverage|lcov\.info|coverage\.xml)$"),
+    ("terraform state / plugins", r"(^|/)\.terraform/|\.tfstate(\.backup)?$"),
+    ("editor / os state", r"(^|/)(\.DS_Store|Thumbs\.db)$|\.xcuserstate$|(^|/)xcuserdata/|(^|/)\.idea/|[^/]+\.sw[po]$"),
+]
+# Ambiguous by name: `bin/` holds scripts as often as binaries, `build/` can be a build *script*
+# directory, `vendor/` is a supported Go and PHP workflow, `target/` is Rust and Maven output but
+# also an ordinary directory name. Reported separately so the reviewer opens them.
+ARTIFACT_AMBIGUOUS = [
+    ("build/ or out/ directory", r"(^|/)(build|out)/"),
+    ("bin/ or obj/ directory", r"(^|/)(bin|obj)/"),
+    ("target/ directory (rust / maven output?)", r"(^|/)target/"),
+    ("vendor/ or third_party/ tree (deliberate vendoring?)", r"(^|/)(vendor|third_party|thirdparty)/"),
+    ("deps/ or _build/ (elixir output?)", r"(^|/)(deps|_build)/"),
+    ("archive / package file", r"\.(jar|war|ear|zip|tar|tgz|tar\.gz|gz|7z|rar)$"),
+    ("generated code (committed on purpose?)", r"\.pb\.(go|cc|h)$|_pb2(_grpc)?\.pyi?$|\.g\.dart$|\.generated\.[a-z]+$|(^|/)(schema\.rb|generated)/?"),
+    ("log or local database file", r"\.(log|sqlite3?|db)$"),
+]
+# Committed on purpose in every repo that has them; never a finding.
+ARTIFACT_INTENTIONAL = r"(^|/)(gradle/wrapper/gradle-wrapper\.jar|\.mvn/wrapper/maven-wrapper\.jar)$"
+
+
+def _bucket(paths, rules, sizes):
+    out = []
+    for name, rx in rules:
+        r = re.compile(rx)
+        hits = [p for p in paths if r.search(p)]
+        if hits:
+            out.append({"category": name, "count": len(hits), "bytes": sum(sizes.get(p, 0) for p in hits),
+                        "samples": sorted(hits, key=lambda p: -sizes.get(p, 0))[:6]})
+    return sorted(out, key=lambda d: -d["count"])
+
+
+def scan_build_artifacts(ctx):
+    root = ctx.root
+    tracked = [p for p in git_out(root, "ls-files", "-z", "--cached").split("\0") if p]
+    sizes = {}
+    for p in tracked:
+        try: sizes[p] = os.stat(os.path.join(root, p)).st_size
+        except OSError: sizes[p] = 0
+    intentional = [p for p in tracked if re.search(ARTIFACT_INTENTIONAL, p)]
+    candidates = [p for p in tracked if p not in set(intentional)]
+    certain = _bucket(candidates, ARTIFACT_CERTAIN, sizes)
+    claimed = {p for name, rx in ARTIFACT_CERTAIN for p in candidates if re.search(rx, p)}
+    ambiguous = _bucket([p for p in candidates if p not in claimed], ARTIFACT_AMBIGUOUS, sizes)
+
+    # Tracked AND matched by an ignore rule: the file was committed before the rule existed, and
+    # .gitignore does nothing to a file git already tracks. Usually the whole finding.
+    ignored_tracked = [p for p in git_out(root, "ls-files", "-z", "-ci", "--exclude-standard").split("\0") if p]
+
+    largest = sorted(((p, n) for p, n in sizes.items()), key=lambda x: -x[1])[:15]
+    binary = []
+    for p, n in largest[:60]:
+        try:
+            with open(os.path.join(root, p), "rb") as fh:
+                if b"\0" in fh.read(4096): binary.append([p, n])
+        except OSError: pass
+
+    counts = dict(l.split(": ", 1) for l in git_out(root, "count-objects", "-vH").split("\n") if ": " in l)
+    pack = f"{counts.get('size-pack', '?').strip()} packed + {counts.get('size', '?').strip()} loose"
+
+    # Biggest blobs ever committed, by path — what a clone pays for even after a `git rm`.
+    hist, seen = [], {}
+    try:
+        rev = subprocess.run(["git", "-C", root, "rev-list", "--objects", "--all"],
+                             capture_output=True, text=True, timeout=120)
+        cat = subprocess.run(["git", "-C", root, "cat-file",
+                              "--batch-check=%(objecttype) %(objectname) %(objectsize) %(rest)"],
+                             input=rev.stdout, capture_output=True, text=True, timeout=120)
+        for line in cat.stdout.split("\n"):
+            f = line.split(" ", 3)
+            if len(f) == 4 and f[0] == "blob":
+                path, size = f[3].strip(), int(f[2])
+                if path and size > seen.get(path, 0): seen[path] = size
+        hist = sorted(seen.items(), key=lambda x: -x[1])[:15]
+    except Exception:
+        hist = []
+    # A deleted source file in this list is noise; a deleted artifact or a multi-megabyte blob is
+    # the point — those bytes are in every clone and only a rewrite removes them.
+    art_rx = re.compile("|".join(rx for _, rx in ARTIFACT_CERTAIN))
+    gone = [[p, n] for p, n in seen.items() if p not in sizes and (n >= 1048576 or art_rx.search(p))]
+    gone = sorted(gone, key=lambda x: -x[1])[:15]
+
+    return {"build_artifacts": {
+        "tracked_files": len(tracked), "certain": certain, "ambiguous": ambiguous,
+        "intentional": intentional, "tracked_but_ignored": ignored_tracked[:40],
+        "tracked_but_ignored_count": len(ignored_tracked),
+        "gitignore_files": [p for p in tracked if ctx.base(p) == ".gitignore"],
+        "largest_tracked": [[p, n] for p, n in largest[:10]], "binary_tracked": binary[:10],
+        "pack_size": pack, "history_blobs": [[p, n] for p, n in hist[:10]], "history_only": gone[:10]}}
+
+
+def render_build_artifacts(inv, ctx):
+    """Q23. Build output, dependency trees or caches committed to git (recommended: none)"""
+    def mb(n): return f"{n / 1048576:.1f} MB" if n >= 1048576 else (f"{n / 1024:.0f} KB" if n >= 1024 else f"{n} B")
+    def plural(n): return "file" if n == 1 else "files"
+    a, md = inv["build_artifacts"], []
+    md.append(f"- Tracked files: **{a['tracked_files']}** (raw `git ls-files`, nothing filtered — "
+              "this question is about the trees every other count here excludes)")
+    n_ign = a["tracked_but_ignored_count"]
+    md.append(f"- Tracked **and** matched by an ignore rule (`git ls-files -ci --exclude-standard`): **{n_ign}**"
+              + (" — each one was committed before the rule existed, and .gitignore does not untrack anything:"
+                 if n_ign else " — nothing tracked that the repo's own ignore rules say to ignore"))
+    for p in a["tracked_but_ignored"][:15]: md.append(f"  - {p}")
+    md.append("- Derived / dependency paths tracked: " + ("**none found**" if not a["certain"] else
+                                                          f"**{sum(c['count'] for c in a['certain'])} files**"))
+    for c in a["certain"]:
+        md.append(f"  - **{c['category']}** — {c['count']} {plural(c['count'])}, {mb(c['bytes'])}: " +
+                  ", ".join(f"`{p}`" for p in c["samples"][:4]))
+    if a["ambiguous"]:
+        md.append("- Ambiguous by name — open these before calling them findings (a `bin/` of scripts, "
+                  "a deliberate Go `vendor/`, generated code committed on purpose):")
+        for c in a["ambiguous"]:
+            md.append(f"  - {c['category']} — {c['count']} {plural(c['count'])}, {mb(c['bytes'])}: " +
+                      ", ".join(f"`{p}`" for p in c["samples"][:4]))
+    if a["intentional"]:
+        md.append("- Excluded as conventionally intentional: " + ", ".join(f"`{p}`" for p in a["intentional"]))
+    md.append("- .gitignore files: " + (", ".join(f"`{p}`" for p in a["gitignore_files"][:10]) or
+                                        "**none in the repo** — check every category above harder"))
+    md.append("- Largest tracked files: " + ", ".join(f"`{p}` {mb(n)}" for p, n in a["largest_tracked"][:6]))
+    if a["binary_tracked"]:
+        md.append("- Binary by content (names do not always say so — an extensionless ELF is still a build): " +
+                  ", ".join(f"`{p}` {mb(n)}" for p, n in a["binary_tracked"][:6]))
+    md.append(f"- What every clone downloads (`git count-objects -vH`): **{a['pack_size']}** — put that "
+              "next to the size of the source; a small repo with a large pack has something in its history")
+    if a["history_blobs"]:
+        md.append("- Biggest blobs in history: " + ", ".join(f"`{p}` {mb(n)}" for p, n in a["history_blobs"][:6]))
+    if a["history_only"]:
+        md.append("- Artifacts or large blobs in history but **not** in HEAD (already `git rm`'d — the "
+                  "bytes are still in every clone; only a history rewrite removes them): " +
+                  ", ".join(f"`{p}` {mb(n)}" for p, n in a["history_only"][:6]))
+    md.append("- Not answered here: whether a committed artifact is what deploys, whether one has a key "
+              "baked into it (Q11), and whether vendored or generated trees are deliberate. Read them.")
+    return md
+
+
 def render_analyzers(inv, ctx):
     """Analyzer outputs present"""
     tools = ctx.tools
@@ -1522,6 +1683,7 @@ SECTIONS = [
     ("Q20. No change-detector tests (recommended: none)", render_change_detectors),
     ("Q21. Baseline TypeScript compiler-check coverage (recommended: 100%)", render_ts_checks),
     ("Q22. Not re-implementing what a maintained library already solves (recommended: no)", render_reinvention),
+    ("Q23. Build output, dependency trees or caches committed to git (recommended: none)", render_build_artifacts),
     ("Analyzer outputs present", render_analyzers),
 ]
 
@@ -1548,12 +1710,13 @@ def main():
     inv.update(scan_types(ctx, inv))
     inv.update(scan_readme(ctx))
     inv.update(scan_reinvention(ctx))
+    inv.update(scan_build_artifacts(ctx))
     inv["analyzer_outputs"] = ctx.tools
     with open(os.path.join(out, "inventory.json"), "w") as fh:
         json.dump(inv, fh, indent=1, default=str)
 
     md = [f"# Code quality inventory — `{root}` — {inv['date']}", "",
-          "Mechanical evidence for the twenty-two questions in `references/quality-checklist.md`. "
+          "Mechanical evidence for the twenty-three questions in `references/quality-checklist.md`. "
           "Every line here is a pointer: open the file before you cite it. "
           "Suggested answers are mechanical and can be wrong in both directions.", ""]
     for title, renderer in SECTIONS:

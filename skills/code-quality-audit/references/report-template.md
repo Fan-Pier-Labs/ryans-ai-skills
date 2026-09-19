@@ -1,6 +1,6 @@
 # Code review report template
 
-Use this shape. Every one of the twenty-two questions gets a row in the scorecard and a section,
+Use this shape. Every one of the twenty-three questions gets a row in the scorecard and a section,
 even when the answer is "Yes, verified" in one line — a reader checking the review against the
 checklist should never wonder whether a question was skipped. Lead with the worst thing. Write
 for someone who knows the domain but didn't watch you work: what it is, why it matters, what to
@@ -55,6 +55,7 @@ time.>
 | 20 | No change-detector tests | | Medium | <4 snapshots over 1k lines; 6 files change in lockstep with their source> |
 | 21 | Baseline TypeScript compiler checks enabled | <n>% / N/A | High below ~70% | <lowest project 14/23; no noUncheckedIndexedAccess anywhere> |
 | 22 | Not re-implementing what a library solves | | **Critical** for crypto/auth/sanitization, else Medium | <hand-rolled CSV + JWT verify; date-fns installed but unused> |
+| 23 | No build output / dependency trees / caches committed | | **High** if it deploys or bloats clones, else Medium | <node_modules tracked in web/; 2.1k .pyc; pack 840 MB vs 6 MB of source> |
 
 **Answer counts:** <n> Yes · <n> Partial · <n> No · <n> Unknown · <n> N/A
 
@@ -317,6 +318,33 @@ library they tried and removed (`git log -S`), the niche where no library exists
 explicitly: this question's failure mode is a confident recommendation that costs the team a
 migration.>
 
+## Q23. Build output, dependency trees and caches in git — <Answer>
+
+| What is tracked | Where | Files | Why it is there | Cost | Severity |
+|---|---|---|---|---|---|
+| `node_modules/` | `web/node_modules/` | 24,110 | added before `.gitignore` existed | every clone and diff | 🟠 High |
+| Compiled bytecode | `api/**/*.pyc` | 2,140 | no Python ignore rules | noise; stale bytecode | 🟡 Medium |
+| Built bundle that deploys | `dist/` | 12 | deploy serves it; CI does not rebuild | source and shipped code can disagree | 🟠 High |
+
+**Tracked but ignored** (`git ls-files -ci --exclude-standard`): <n files — the ignore rule was
+added after the files were committed, so it never took effect. This is the list to untrack
+first, and the one-line CI check that keeps it empty afterwards.>
+
+**Repository weight:** <`size-pack` vs the size of the source, and the largest blobs in history
+from `git rev-list --objects --all | git cat-file --batch-check`. Say whether the weight is in
+`HEAD` (untracking fixes it going forward) or only in history (it does not) — and give the
+verdict on a rewrite rather than recommending one by reflex: what it costs every clone, fork and
+open PR, and whether this repo's numbers justify it.>
+
+**Checked for secrets inside artifacts:** <a committed bundle or state file can carry a key that
+no `.env` scan sees. Say you looked, and cross-reference Q11 if you found one — that is a
+rotation, not a cleanup.>
+
+**Deliberate, not accidental:** <the gradle wrapper jar, a vendored `vendor/` with a written
+policy, generated protobuf/GraphQL/ORM code, binary fixtures and assets — each with why it is
+legitimate here, and for generated code whether CI regenerates it and fails on a diff. Lockfiles
+belong to Q12 and are not listed here.>
+
 ---
 
 ## Recommended sequence
@@ -331,12 +359,14 @@ package, then `noUncheckedIndexedAccess` as its own PR; replace the <n> fixed sl
 dead exports knip found>
 **Then (decisions, not fixes):** <split the two 1500-line modules; consolidate the duplicated
 invoice logic; replace the hand-rolled CSV parser and date arithmetic with the libraries named in
-Q22, one per PR, characterization tests first; retire the v1 endpoints after 30 days of 410>
+Q22, one per PR, characterization tests first; retire the v1 endpoints after 30 days of 410;
+decide whether the 840 MB pack is worth a history rewrite and a coordinated re-clone>
 
 ## Method and caveats
 
 - Commands and tool versions used: <list>. Tools not installed and therefore not run: <list>.
-- Counts exclude vendored, generated, and gitignored files (`git ls-files`-based).
+- Counts exclude vendored, generated, and gitignored files (`git ls-files`-based) — except Q23,
+  which is answered on the unfiltered tracked-file list and the object history.
 - The test suite was <run / not run>; integration tests <not run because they need a database>.
 - Auth findings are from reading routes and middleware; <no/some> runtime verification was done.
 - Dead-code and dead-endpoint findings are candidates: frameworks call code by convention, and
