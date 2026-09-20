@@ -91,6 +91,43 @@ Run in order. Load a reference only when you reach the step that needs it.
   DNS (`dig`, `whois`) and AWS (Secrets Manager names, IAM role trust policies, SES/SNS
   destinations) will add systems they forgot. Every system found later gets appended.
 
+### 1b. Dependency preflight — the two scanners, asked for once
+
+Q4 ("are there secrets in the repo history, any branch, any time") is answered by a scanner or it
+is not answered. `repo-scan.sh` falls back to grep when neither is installed, and that fallback
+finds `AKIA`-shaped strings and nothing else: no entropy analysis, no provider-specific
+detectors, no rules for the hundred token formats it does not know. A clean grep over a dirty
+history reads as "no secrets", which is the single most expensive wrong answer this audit can
+give.
+
+So ask, once, alongside the access ask — not when you reach step 2 and find it missing:
+
+```bash
+command -v gitleaks trufflehog    # nothing printed = neither is installed
+```
+
+```
+Q4 (secrets in git history) needs a scanner. Neither is installed here:
+
+  gitleaks    → full-history scan, ~700 detection rules      brew install gitleaks
+  trufflehog  → same, plus it verifies live credentials      brew install trufflehog
+
+Either one is enough; gitleaks is the lighter install. Both run locally and read only.
+Install one and run the audit? (yes / no)
+```
+
+- **Yes** → install, confirm it runs (`gitleaks version`), continue to step 2.
+- **No** → **stop, and do not run the audit.** Q4 is the finding a departing-contractor review
+  exists to produce, and the rest of the matrix is not worth building around a hole where it
+  should be. Say that, say the offer stands, and leave it. Do not run the grep fallback and
+  report Q4 as a Yes — a grep-clean history is `Unknown`, and an `Unknown` the user declined is
+  not a report worth writing.
+
+`../shared/dependency-preflight.md` is the full contract. Everything else this audit uses —
+`gh`, `aws`, `op`, `gam`, `dig`, `whois`, a PaaS CLI — is **access, not a package**: those belong
+to the ask above, where a missing one narrows the audit's scope rather than invalidating a
+question, and the report names the systems it could not reach.
+
 ### 2. Code host and repos (Q1, Q4, Q5 — and half of Q2)
 
 ```bash
@@ -109,8 +146,10 @@ Then, in a checkout of each repo (or the monorepo):
 scripts/repo-scan.sh --out <dir> [--since 2022-01-01]
 ```
 
-Runs `gitleaks`/`trufflehog` over the full history when installed (grep fallback otherwise,
-values masked), lists committers by email domain with last commit date (the personal-Gmail
+Runs `gitleaks`/`trufflehog` over the full history — step 1b is where one of them got
+installed, so the grep fallback (values masked) should only ever appear in a run that skipped the
+preflight, and a report leaning on it says so on the Q4 row. Lists committers by email domain
+with last commit date (the personal-Gmail
 committer from 2023 is a Q2 lead), git dependencies fetched from personal repos, `.env`-shaped
 files that are tracked, submodule remotes, CI secrets that are really one person's token,
 credential-shaped lines in docs, and every deploy target the repo names. Then §2b and §2c.

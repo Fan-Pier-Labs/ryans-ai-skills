@@ -628,7 +628,7 @@ git ls-files -z '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' '*.go' '*.rb' '*.java' '*.r
 Exclude generated files, schemas, migrations, lockfiles, and vendored code — then judge what is
 left. 1000 lines is a threshold, not a rule: what matters is whether the file has one job. A
 1200-line file that is 60 small pure functions on one topic is fine; a 600-line React component
-holding fetching, state, validation and layout is not. Check the hot-files list from step 2 —
+holding fetching, state, validation and layout is not. Check the hot-files list from step 3 —
 a huge file that changes every week is the expensive one; a huge file nobody has touched in two
 years is mostly harmless.
 

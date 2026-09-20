@@ -11,6 +11,13 @@ beside every skill in both places and `../../shared/<file>` always resolves.
 | `repo-targets.sh` | auto-reviewer, ci-runner, dependency-updater, pr-demo-media, pr-watcher | Sourced library: `resolve_repos` (REPOS / OWNERS / the current checkout), `$CUTOFF`, `ts_days_ago` |
 | `find-pr-candidates.sh` | auto-reviewer, pr-demo-media | The open-PR discovery sweep: `find-pr-candidates.sh [--touching <regex>] [--reviews-are-feedback] <marker>...` |
 | `ec2-ssh-sweep.sh` | infra-audit, infra-cost-audit, sec-ops-audit | `discover` running EC2 instances, then `run` a read-only collector on each over SSH or SSM |
+| `dependency-preflight.md` | code-quality-audit, sec-ops-audit, pr-demo-media, dependency-updater, enable-more-lint-or-ts-checks | Not a script — the contract for the tools a skill cannot run without: detect, ask once, then install or stop |
+
+`dependency-preflight.md` is the one exception to "scripts": it is a rule several skills follow
+rather than code they call. A skill reaches it the same way, by relative path
+(`../shared/dependency-preflight.md`), and states its own gate inline in its SKILL.md — the
+shared file holds the parts that are identical everywhere (what goes in the ask, ephemeral vs
+project installs, what a no means) so five skills do not each invent a different answer.
 
 ## How skills reach it
 

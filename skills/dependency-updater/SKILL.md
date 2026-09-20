@@ -34,6 +34,43 @@ explicitly (or the current checkout) is always included. If `open_update_pr` is 
 open — **update that branch instead of opening a second PR**, or skip the repo
 if the existing PR is already current.
 
+### 1b. Dependency preflight — the toolchains, before the first clone
+
+This skill's whole value is in step 4: a bumped lockfile that was built and tested. A missing
+toolchain does not show up until then — after the clone, the branch and the rewrite — and what
+it leaves behind is the worst possible artifact, a version bump nobody verified.
+
+So check the machine against what the candidates actually need, once, before cloning anything.
+The ecosystems are readable without a checkout:
+
+```bash
+for r in <candidate repos>; do gh api "repos/$r/languages" --jq 'keys | join(",")'; done
+command -v bun npx uv python3 cargo go   # what this machine can actually drive
+```
+
+Then one ask covering the whole sweep:
+
+```
+3 repos to update. Two need toolchains that aren't installed here:
+
+  uv     → the Python repo's lockfile (uv lock --upgrade)   brew install uv
+  go     → the Go repo (go get -u ./... && go mod tidy)     brew install go
+
+The npm repo is fine — bunx fetches npm-check-updates into its own cache.
+Install these and run the update? (yes / no)
+```
+
+- **Yes** → install, verify each runs, then sweep every repo.
+- **No** → **skip those repos entirely; do not clone them.** Update the ones whose toolchain is
+  present, and report the skipped ones by name with the reason. A partial sweep is fine and
+  honest; a PR whose verification step was skipped because the runtime was missing is not. Never
+  open a PR you could not build and test — that is the one rule this skill exists to hold, and a
+  missing toolchain is not an excuse to relax it.
+
+Everything inside the throwaway clone — `bunx npm-check-updates`, `npm ci`, `uv sync`, the
+repo's own dependencies — installs freely and needs no asking; nothing there is the user's tree.
+`../shared/dependency-preflight.md` is the full contract.
+
 ### 2. Per repo: clone and branch
 
 ```bash

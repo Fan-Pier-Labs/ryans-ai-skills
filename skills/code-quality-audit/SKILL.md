@@ -64,6 +64,12 @@ surface is one report file, plus a PR comment or issue if the user asks for one.
 reformat, add a config, or run a linter with `--fix` unless the user reads the report and names
 what to change.
 
+The one thing it installs is the analyzers, and only the ones the user approves by name at the
+**dependency preflight** (step 2) before anything else runs. On a no, the audit does not run —
+it does not run degraded. That gate exists because the alternative is worse than either answer:
+an audit that gets four questions in, finds the tool missing, and produces a scorecard of
+Unknowns the user cannot act on.
+
 ## Why this skill exists
 
 A model asked "review this codebase" will read a handful of files, say "well-structured, uses
@@ -81,8 +87,8 @@ to prefer a command's output over your impression of the code.
 
 ## Workflow
 
-Run in order. Load `references/quality-checklist.md` when you reach step 3; load
-`references/report-template.md` when you reach step 6.
+Run in order. Load `references/quality-checklist.md` when you reach step 4; load
+`references/report-template.md` when you reach step 7.
 
 ### 1. Scope and ground rules
 
@@ -101,7 +107,57 @@ Run in order. Load `references/quality-checklist.md` when you reach step 3; load
   `.gitignore`'d space. Never leave a report or tool output as untracked clutter in the repo
   unless the user asks for it there.
 
-### 2. Get the shape of the repo before judging any of it
+### 2. Dependency preflight — ask once, then install or stop
+
+**Do this before the inventory, and never skip it.** Half the twenty-three questions are answered
+by a tool, not by reading: Q2 needs `knip` or `vulture`, Q16 needs the repo's `eslint`, Q21 needs
+`tsc`, Q1 needs whatever checks this language. Discovering that mid-run is what turns an audit
+into a half-report full of Unknowns.
+
+```bash
+scripts/run-analyzers.sh --repo <repo> --out <scratch dir> --check
+```
+
+`--check` runs nothing. It prints which analyzers this repo's languages call for, which are
+already present, and the exact install command for each missing one — with the one-off
+(`npx --yes`, `uvx`) equivalent where there is one.
+
+Then **one message to the user**, listing every missing tool, what each one answers, and the
+command. Not one question per tool, and not a question you answer for them:
+
+```
+This audit needs 3 tools that aren't installed here:
+
+  knip      → which files and exports are dead (Q2 — nothing else answers this)   npx --yes knip
+  eslint    → the Q16 rule-coverage score against the 105-rule baseline           npm i -D eslint
+  gitleaks  → secrets in git history (Q11)                                        brew install gitleaks
+
+They run read-only, and the npx/uvx ones install nothing into the repo.
+Install these and run the audit? (yes / no)
+```
+
+Two paths, and only these two:
+
+- **Yes** → install exactly what was listed, confirm each one runs (`<tool> --version`), then go
+  to step 3. Record in the report's method section what was installed and whether it was
+  ephemeral or left in the tree.
+- **No** → **stop. Do not run the audit.** Name the questions that would have been unanswerable
+  and say the offer stands. Never start anyway and fill the gaps with greps, impressions, or a
+  column of Unknowns — a scorecard whose evidence column is empty is worse than no scorecard.
+
+Default to the **ephemeral** form (`npx --yes`, `uvx`, `pipx run`): it keeps this skill's
+read-only promise, which a `npm i -D` into the user's `package.json` does not. Use the project
+install only where the tool must resolve the repo's own dependencies — type-aware ESLint rules
+and `tsc` on the project's own TypeScript version — and say in the ask that it touches
+`package.json` and the lockfile and is revertable. Never `sudo`, and never a global install
+without calling it global. `../shared/dependency-preflight.md` is the full contract.
+
+Tools with a real fallback are worth listing but are not a gate: `jscpd` (`dup-blocks.py` covers
+duplication) and `madge` (`import-graph.py` covers cycles). Say which is which in the ask, so a
+user can approve the ones that matter and decline the rest — a partial yes is a yes for what they
+approved.
+
+### 3. Get the shape of the repo before judging any of it
 
 ```bash
 cd <repo>
@@ -118,7 +174,7 @@ gitignored tree stay out of every count. Where you must walk the filesystem, exc
 Never quote a line count, a duplication figure, or a test count that includes vendored or
 generated files — one `node_modules` in the denominator makes every number meaningless.
 
-The numbers you need before step 3: files and lines per language, count of non-test source
+The numbers you need before step 4: files and lines per language, count of non-test source
 files, count of test files, the top-level directory layout, and whether this is a monorepo
 (multiple `package.json` / `pyproject.toml` / `go.mod`). Review each package separately when
 they differ, and say which package each finding is in.
@@ -134,12 +190,13 @@ HTTP endpoint with its visible auth status and whether anything references it (Q
 duplicate blocks (Q5), hand-rolled implementations paired against the dependency list (Q22),
 tracked build output, dependency trees and caches with the tracked-but-ignored set called out
 separately (Q23), test/CI/config/lockfile/secret/big-file/swallowed-error signals, and
-the output of whichever analyzers are already installed (`run-analyzers.sh` never installs
-anything and never passes `--fix`). Read `DIGEST.md` first. Every line in it is a pointer,
+the output of the analyzers step 2 settled (`run-analyzers.sh` itself never installs anything
+and never passes `--fix` — the installing happened at the preflight, with the user's yes).
+Read `DIGEST.md` first. Every line in it is a pointer,
 not a verdict: open the file before you cite it. The output directory must be outside the
 repo or gitignored.
 
-### 3. Answer the twenty-three questions
+### 4. Answer the twenty-three questions
 
 Work through `references/quality-checklist.md` in order. For each question write:
 
@@ -157,18 +214,18 @@ Rules that keep this honest:
   resolve the presets and the `extends` chain that make a config's text an unreliable read.
   Read-only invocations only: never `--fix`, `--write`, or
   `--unsafe-fixes`. **Q2 is the one question with no acceptable fallback**: the "which files are
-  dead" half needs `knip` (TS/JS) or `vulture` (Python), so if the analyzer summary lists either
-  as skipped, ask the user to install it (`npm i -D knip`, `pipx install vulture`) and say the
-  question is Partial until then — never substitute a grep for it. If a tool is not installed,
-  say "not installed, not run" rather than guessing what it would say — or run it once from a throwaway location (`npx --yes`, `uvx`)
-  if the user is fine with that, and label the result as an ad-hoc run.
+  dead" half needs `knip` (TS/JS) or `vulture` (Python), and step 2 is where that was resolved —
+  never substitute a grep for it. A tool still missing here means the user declined it by name at
+  the preflight: say "declined at preflight, not run", mark what it would have answered Partial or
+  Unknown, and leave it there. Never guess what a tool would have said, and never install one now
+  that was not in the list the user approved.
 - **Count, then cite.** "12 of 47 route handlers have no auth check" beats "auth looks
   inconsistent". Every count needs the command that produced it in the report.
 - **Open the file before you claim anything about it.** A grep hit is a lead, not a finding.
 - **Unknown is an answer.** Say what access or artifact would have resolved it (production
   access logs, the mobile client's repo, a passing test run).
 
-### 4. Run the test suite with coverage on, don't just count test files
+### 5. Run the test suite with coverage on, don't just count test files
 
 ```bash
 npm test 2>&1 | tail -30        # or: pytest -q, go test ./..., cargo test, bundle exec rspec
@@ -194,7 +251,7 @@ While the suite runs, capture what Q19 needs: the wall-clock duration and the sl
 the runner's own per-test timing. A suite whose slowest tests are all waiting on fixed durations is
 the finding, and the seconds are the argument.
 
-### 5. Judge structure with the codebase in front of you
+### 6. Judge structure with the codebase in front of you
 
 Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
 
@@ -215,7 +272,7 @@ Q2, Q5, Q8 and Q13 are where a model produces noise. Before writing any of them:
   `importlib` / `require`, and other repos in the org. A public library's exports are its
   product — unreferenced does not mean dead.
 
-### 6. Write the report
+### 7. Write the report
 
 Use `references/report-template.md`: summary → scorecard (all twenty-three rows, always) → one
 section per question → the top findings ranked by severity → a recommended sequence → method
@@ -238,6 +295,10 @@ read files, git log, and analyzers in read-only mode            ──→ defaul
    ↓
 run the unit test suite                                          ──→ fine
    ↓
+install an analyzer ephemerally (npx --yes / uvx / pipx run)     ──→ step 2's yes covers exactly
+   ↓                                                                 the tools it listed
+install an analyzer into the repo (npm i -D / pip install)       ──→ step 2's yes, and only when
+   ↓                                                                 named as touching the lockfile
 run integration tests that need a DB, credentials, or network    ──→ ask first; say what they touch
    ↓
 install a tool globally, write into the repo, run --fix,
@@ -245,7 +306,9 @@ apply any code change, post a comment, open an issue or PR       ──→ only 
 ```
 
 The user reading the report and saying "fix the duplication in the invoice code" authorizes
-that change and nothing else. Never batch fixes across questions.
+that change and nothing else. Never batch fixes across questions. A yes at the preflight
+authorizes the tools on that list and nothing else — not a second tool you wish you had four
+questions later, and not the same tool installed a different way.
 
 ## Rationalizations to catch yourself in
 
@@ -271,6 +334,9 @@ that change and nothing else. Never batch fixes across questions.
 | "The file is 3000 lines but it's generated / a schema." | Generated and vendored files are out of scope entirely. Exclude them from every count, and say you did. |
 | "I'll report duplication as a percentage." | Only if a tool measured it on non-vendored, non-generated code. Otherwise report the groups you found and where. |
 | "I couldn't run the linter, so I'll estimate the violations." | Never. "Not installed, not run" is the honest answer. |
+| "Most of the tools are here, I'll start and install the rest if I need them." | That is the failure the preflight removes. Run `--check` first, ask once, and let the user decide with the whole list in front of them — a second ask four questions in has already spent their time. |
+| "They said no, but I can still do most of it." | No means the audit does not run. A scorecard with the tool-answered questions blank reads as "these are fine" to everyone who sees it later, which is the one outcome worse than no report. |
+| "They approved knip, and eslint is the same kind of thing." | It is not. Approval is per-tool and per-install-method. Installing something they did not name — especially into their `package.json` — is the thing that makes the next yes harder to get. |
 | "There's a `tests` job in CI, so Q10 is a Yes." | Check that it is *required* by branch protection, that no `if:`/`paths:` filter skipped it on the last merged PRs, and that the command it runs is the one carrying the coverage gate. A required check whose steps did not execute is green and worthless. |
 | "Coverage is 84%, so Q17 is a Yes." | Only with a threshold enforcing it, branch coverage in the same range, and no critical module far below the average. 84% with the auth path at 0% and no gate is a Partial. |
 | "There's a coverage badge saying 91%." | Reproduce it or report Unknown. Badges go stale, and they usually report lines on a favourable include list. |
@@ -303,8 +369,15 @@ tools are installed — so the next review is a re-run, not a rediscovery.
 
 ## Reference files
 
-- `scripts/repo-inventory.sh` — runs everything below and builds `DIGEST.md`; step 2.
-  `--help` for flags. `scripts/run-analyzers.sh` is the tool-runner half, callable alone.
+- `scripts/repo-inventory.sh` — runs everything below and builds `DIGEST.md`; step 3.
+  `--help` for flags. `scripts/run-analyzers.sh` is the tool-runner half, callable alone;
+  `--check` is its dry-run preflight — nothing executes, it just prints what is present, what is
+  missing, and the install command for each — and that is step 2.
+- `../shared/dependency-preflight.md` — the ask-once-then-install-or-stop contract this skill
+  shares with `sec-ops-audit`, `pr-demo-media`, `dependency-updater` and
+  `enable-more-lint-or-ts-checks`: what goes in the ask, ephemeral vs project installs, what to do
+  on a failed install, and what a no means. Read during step 2 if anything about the ask is
+  unclear.
 - `scripts/import-graph.py` — intra-repo import graph for Python and JS/TS, cycles via
   Tarjan SCC, fan-in/fan-out; the mechanical half of Q8.
 - `scripts/find-endpoints.py` — routes for Express/Nest/Next/FastAPI/Flask/Django/Rails/Go/
@@ -317,7 +390,7 @@ tools are installed — so the next review is a re-run, not a rediscovery.
 - `references/quality-checklist.md` — the twenty-three questions: what to look at, why each matters,
   what good looks like, and the fix. Deliberately kept above per-language tooling detail: it
   carries the false positives, thresholds and judgment calls, not an ecosystem tutorial. Read
-  during step 3.
+  during step 4.
 - `references/eslint-baseline.config.mjs` — the 105-rule baseline Q16 measures against, with the
   reasoning kept on every rule and the wave-adoption method in its header. Read for Q16, and
   hand it to the user as the thing to copy into their repo.
@@ -327,4 +400,4 @@ tools are installed — so the next review is a re-run, not a rediscovery.
   header. Read for Q21, and hand it to the user as the thing to copy into their repo. It is a
   valid tsconfig as written — `tsc --showConfig -p` on it prints the 23.
 - `references/report-template.md` — the scorecard report skeleton and the per-question
-  contract. Read during step 6.
+  contract. Read during step 7.
